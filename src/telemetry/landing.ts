@@ -9,6 +9,7 @@
  */
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
+import { DEFAULT_PROFILE_SORT, PROFILE_SORT_MODES } from "./profileSort"
 import { FADE_FROM, GENERAL_WINDOW_TYPES, SPENT_AT } from "./profileSpent"
 
 export const landingHtml = `<!DOCTYPE html>
@@ -115,6 +116,19 @@ export const landingHtml = `<!DOCTYPE html>
   .section-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase;
     letter-spacing: 1px; margin-bottom: 12px; }
 
+  /* Tabs rather than a dropdown: the current order stays legible without
+     opening anything, which is the whole job of this page. */
+  .section-head { display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin-bottom: 12px; }
+  .section-head .section-title { margin-bottom: 0; }
+  .sort-tabs { display: flex; gap: 2px; flex-shrink: 0; }
+  .sort-tab { background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); font-family: inherit; font-size: 11px; font-weight: 500;
+    letter-spacing: 0.3px; padding: 2px 8px 3px; cursor: pointer; }
+  .sort-tab:hover { color: var(--text); }
+  .sort-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .sort-tab:focus-visible { outline: none; color: var(--accent); border-bottom-color: var(--accent); }
+
   .footer { margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border);
     font-size: 11px; color: var(--muted); text-align: center; }
   .footer a { color: var(--accent); text-decoration: none; }
@@ -185,6 +199,57 @@ function computeProfileSpend(p){
   return {fraction:f,state:'available',fade:0,reason:null};
 }
 
+// Inlined from src/telemetry/profileSort.ts, unit-tested in
+// profile-sort.test.ts.
+var PROFILE_SORT_MODES=${JSON.stringify(PROFILE_SORT_MODES)};
+var viewSort=${JSON.stringify(DEFAULT_PROFILE_SORT)};
+function sortProfilesForView(items,mode,spentOf){
+  var list=items.slice();
+  if(mode==='configured')return list;
+  var direction=mode==='spent-desc'?-1:1;
+  return list
+    .map(function(item,index){return {item:item,index:index,spent:spentOf(item)}})
+    .sort(function(a,b){
+      if(a.spent==null||b.spent==null){
+        if(a.spent==null&&b.spent==null)return a.index-b.index;
+        return a.spent==null?1:-1;
+      }
+      if(a.spent!==b.spent)return (a.spent-b.spent)*direction;
+      return a.index-b.index;
+    })
+    .map(function(entry){return entry.item});
+}
+function sortTabs(count){
+  if(count<2)return '';
+  var out='';
+  for(var i=0;i<PROFILE_SORT_MODES.length;i++){
+    var m=PROFILE_SORT_MODES[i];var on=m.id===viewSort;
+    out+='<button type="button" class="sort-tab'+(on?' active':'')+'" data-sort="'+esc(m.id)+'"'
+      +' title="'+esc(m.title)+'" aria-pressed="'+(on?'true':'false')+'">'+esc(m.label)+'</button>';
+  }
+  return '<div class="sort-tabs" role="group" aria-label="Sort accounts">'+out+'</div>';
+}
+
+// Re-sorting must not wait for the next 10s poll, so the last payload is
+// kept and re-rendered from memory. The choice is a view preference and is
+// never sent to the server — the saved pool order (/settings) is untouched.
+var SORT_STORAGE_KEY='meridian.accountSort';
+var lastData=null;
+function readStoredSort(){
+  try{
+    var stored=localStorage.getItem(SORT_STORAGE_KEY);
+    for(var i=0;i<PROFILE_SORT_MODES.length;i++)if(PROFILE_SORT_MODES[i].id===stored)return stored;
+  }catch(_){/* storage blocked (private mode) — the default is fine */}
+  return null;
+}
+function setViewSort(mode){
+  if(mode===viewSort)return;
+  var refocus=!!(document.activeElement&&document.activeElement.closest&&document.activeElement.closest('.sort-tab'));
+  viewSort=mode;
+  try{localStorage.setItem(SORT_STORAGE_KEY,mode)}catch(_){/* a lost preference is not worth failing over */}
+  if(lastData)render(lastData[0],lastData[1],lastData[2],lastData[3]);
+  if(refocus){var el=document.querySelector('.sort-tab[data-sort="'+mode+'"]');if(el)el.focus()}
+}
 function introSection(h){
   var meta=[];
   if(h.auth&&h.auth.loggedIn)meta.push(esc(h.auth.email||'')+(h.auth.subscriptionType?' ('+esc(h.auth.subscriptionType)+')':''));
@@ -217,6 +282,11 @@ function profileSection(q,s,pl,h){
     for(var k in byProfile){if(!seen[k])profs.push({id:k,label:k==='default'?(email||'account'):k,configured:false});seen[k]=1}
   }
   if(profs.length===0)return '';
+  function spentOf(p){
+    var quota=quotaByProfile[p.id]||{};
+    return computeProfileSpend({windows:quota.windows,error:quota.error,loggedIn:p.loggedIn}).fraction;
+  }
+  profs=sortProfilesForView(profs,viewSort,spentOf);
   var cards='';
   for(var i=0;i<profs.length;i++){
     var p=profs[i];var cost=byProfile[p.id];
@@ -296,7 +366,8 @@ function profileSection(q,s,pl,h){
       +spentBanner+rows+'</div>';
   }
   if(!cards)return '';
-  return '<div class="section"><div class="section-title">'+(profs.length===1?'Account':'Accounts')+'</div><div class="profile-grid">'+cards+'</div></div>';
+  return '<div class="section"><div class="section-head"><div class="section-title">'+(profs.length===1?'Account':'Accounts')+'</div>'+sortTabs(profs.length)+'</div>'
+    +'<div class="profile-grid">'+cards+'</div></div>';
 }
 
 function strip(items){
@@ -322,6 +393,7 @@ async function refresh(){
 function tokens(v){if(v==null)return '—';if(v>=1e6)return (v/1e6).toFixed(1)+'M';if(v>=1e3)return (v/1e3).toFixed(1)+'k';return String(v)}
 
 function render(h,s,q,pl){
+  lastData=[h,s,q,pl];
   let o='';
   o+=introSection(h);
 
@@ -355,6 +427,8 @@ function switchProfile(id){
     .catch(function(){});
 }
 document.getElementById('content').addEventListener('click',function(e){
+  var tab=e.target.closest('.sort-tab');
+  if(tab&&tab.dataset.sort){setViewSort(tab.dataset.sort);return}
   var card=e.target.closest('.profile-card.switchable');
   if(card&&card.dataset.profile)switchProfile(card.dataset.profile);
 });
@@ -363,6 +437,7 @@ document.getElementById('content').addEventListener('keydown',function(e){
   var card=e.target.closest('.profile-card.switchable');
   if(card&&card.dataset.profile){e.preventDefault();switchProfile(card.dataset.profile)}
 });
+viewSort=readStoredSort()||viewSort;
 refresh();setInterval(refresh,10000);
 ` + profileBarJs + `
 </script>

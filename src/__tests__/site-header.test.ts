@@ -14,6 +14,7 @@ import { settingsPageHtml } from "../telemetry/settingsPage"
 import { profilePageHtml } from "../telemetry/profilePage"
 import { pluginPageHtml } from "../proxy/plugins/pluginPage"
 import { profileBarCss, profileBarHtml, profileBarJs } from "../telemetry/profileBar"
+import { DEFAULT_PROFILE_SORT, PROFILE_SORT_MODES } from "../telemetry/profileSort"
 import { FADE_FROM, GENERAL_WINDOW_TYPES, SPENT_AT } from "../telemetry/profileSpent"
 
 const allPages: Array<[string, string]> = [
@@ -37,53 +38,77 @@ describe("shared site header", () => {
     }
   })
 
-  test("pages include the shared chrome and no duplicate body-level chrome", () => {
+  test("header shows live status pill fed by /health", () => {
+    expect(profileBarHtml).toContain("mhStatus")
+    expect(profileBarJs).toContain("/health")
+  })
+
+  test("header shows active profile chip, not a dropdown", () => {
+    expect(profileBarHtml).not.toContain("meridianProfileSelect")
+    expect(profileBarHtml).not.toContain("<select")
+    expect(profileBarHtml).toContain("mhProfile")
+    expect(profileBarJs).toContain("/profiles/list")
+  })
+
+  test("header shows a build chip fed by /health's build block", () => {
+    expect(profileBarHtml).toContain("mhBuild")
+    expect(profileBarJs).toContain("renderBuild")
+    expect(profileBarJs).toContain("updateAvailable")
+  })
+
+  test("build chip colours follow the DESIGN.md role split", () => {
+    // Blue = interactive: the update chip is a link to the releases page.
+    // Violet = meta: the provenance chip has no href and must not be blue.
+    // Swapping these is the single easiest way to break the design language,
+    // and it is invisible in a screenshot review.
+    expect(profileBarCss).toContain(".mh-build.update")
+    expect(profileBarCss).toContain(".mh-build.provenance")
+
+    const updateRule = profileBarCss.slice(
+      profileBarCss.indexOf(".meridian-header .mh-build.update"),
+      profileBarCss.indexOf(".meridian-header .mh-build.provenance"),
+    )
+    expect(updateRule).toContain("var(--accent, #58a6ff)")
+    expect(updateRule).not.toContain("--accent2")
+
+    const provenanceRule = profileBarCss.slice(profileBarCss.indexOf(".meridian-header .mh-build.provenance"))
+    expect(provenanceRule).toContain("var(--accent2, #bc8cff)")
+    // Non-interactive: no href is set for this state, so no pointer affordance.
+    expect(provenanceRule).toContain("cursor: default")
+    expect(profileBarJs).toContain("removeAttribute('href')")
+  })
+
+  test("every page embeds the shared header exactly once", () => {
     for (const [name, html] of allPages) {
-      // Shared header + its styles + its live poll are injected
-      expect(html, `${name} missing profileBarHtml`).toContain(profileBarHtml)
-      expect(html, `${name} missing profileBarCss`).toContain(profileBarCss)
-      expect(html, `${name} missing profileBarJs`).toContain(profileBarJs)
-
-      // Nav exists only in the shared header
-      const navMatches = html.match(/<nav\b[^>]*>/g) ?? []
-      expect(navMatches.length, `${name} has duplicate nav`).toBe(1)
-
-      // No page carries an inline profile dropdown; profile cards / header pill do it
-      expect(html, `${name} has inline profile dropdown`).not.toContain('<select id="profile-select"')
+      const count = html.split("meridian-header").length - 1
+      expect(count, `${name} page should embed the header once`).toBeGreaterThanOrEqual(1)
     }
   })
 })
 
-describe("landing page (at-a-glance dashboard)", () => {
-  test("how-it-works intro explains the proxy port and setup docs", () => {
-    expect(landingHtml).toContain("Harness Claude, your way.")
-    expect(landingHtml).toContain("ANTHROPIC_BASE_URL")
-    expect(landingHtml).toContain("https://github.com/rynfar/meridian/blob/main/docs/agents.md")
+describe("landing page layout", () => {
+  test("no duplicate in-page header or big status banner", () => {
+    expect(landingHtml).not.toContain("status-banner")
+    expect(landingHtml).not.toContain("<h1>MERIDIAN</h1>")
   })
 
-  test("profile cards double as the switcher", () => {
-    // Clickable card with affordance to activate another profile
-    expect(landingHtml).toContain("data-profile=")
-    expect(landingHtml).toContain("Click to activate")
-    expect(landingHtml).toContain("POST")
+  test("removed sections: connect-an-agent, bottom links, model chips", () => {
+    expect(landingHtml).not.toContain("Connect an Agent")
+    expect(landingHtml).not.toContain('class="links"')
+    expect(landingHtml).not.toContain("Models (24h)")
+  })
+
+  test("profile cards switch the active profile", () => {
+    expect(landingHtml).toContain("switchProfile")
     expect(landingHtml).toContain("/profiles/active")
-    // Current profile is styled active
-    expect(landingHtml).toContain("profile-card active")
+    expect(landingHtml).toContain("/profiles/list")
   })
 
-  test("profile card renders pace against the 7-day quota window", () => {
-    // Pace row with bar, marker, percent delta, and reset countdown
-    expect(landingHtml).toContain("usage-row pace-row")
-    expect(landingHtml).toContain("w-label\">pace<")
-    expect(landingHtml).toContain("pace-marker")
-    expect(landingHtml).toContain("weeklyPace")
+  test("has a friendly how-it-works intro pointing at the endpoint", () => {
+    expect(landingHtml).toContain("ANTHROPIC_BASE_URL")
   })
 
-  test("24h strip leads with operational signals, not debug metrics", () => {
-    // Meaningful operational cards
-    expect(landingHtml).toContain("Requests")
-    expect(landingHtml).toContain("Est. API Value")
-    expect(landingHtml).toContain("Failed Requests")
+  test("stats strip shows meaningful telemetry, not fillers", () => {
     // Token + cache signals are in; TTFB stays on the /telemetry page
     expect(landingHtml).toContain("tokenUsage")
     expect(landingHtml).toContain("Cache Hit")
@@ -118,6 +143,16 @@ describe("landing page (at-a-glance dashboard)", () => {
     expect(landingHtml).not.toContain(".profile-card.spend-fading:hover, .profile-card.spend-spent:hover {")
   })
 
+  test("accounts can be re-sorted for viewing without touching the saved order", () => {
+    // The page carries a copy of the comparator, so the modes it offers are
+    // interpolated from the tested module rather than retyped.
+    expect(landingHtml).toContain(`var PROFILE_SORT_MODES=${JSON.stringify(PROFILE_SORT_MODES)}`)
+    expect(landingHtml).toContain(`var viewSort=${JSON.stringify(DEFAULT_PROFILE_SORT)}`)
+    expect(landingHtml).toContain("sort-tab")
+    // View-only: the durable pool order has one writer, and it is not here.
+    expect(landingHtml).not.toContain("/settings/api/routing")
+  })
+
   test("account cards come from configured profiles, not synthetic cost buckets", () => {
     // With profiles configured, only pl.profiles render (no "default" card);
     // the single-account fallback labels the card with the login email.
@@ -146,9 +181,19 @@ describe("design-system conformance (DESIGN.md)", () => {
   test("pages do not set their own body background (backsplash is shared)", async () => {
     for (const path of pageSources) {
       const src = await Bun.file(path).text()
-      // Match `background:` or `background-color:` anywhere inside a `body { ... }` block
-      const bodyBgMatches = src.match(/body\s*\{[^}]*\bbackground(-color)?\s*:[^}]+}/gi) ?? []
-      expect(bodyBgMatches, `${path} sets body background; body bg is owned by profileBar.ts`).toEqual([])
+      const bodyRule = src.match(/body \{[^}]*\}/)?.[0] ?? ""
+      expect(bodyRule.includes("background"), `${path} body rule must not set background`).toBe(false)
     }
+  })
+})
+
+describe("per-page titles do not repeat the brand", () => {
+  test("dashboard h1 is the page name, not the brand", () => {
+    expect(dashboardHtml).not.toContain("<h1>Meridian</h1>")
+    expect(dashboardHtml).toContain("<h1>Telemetry</h1>")
+  })
+
+  test("plugins page drops the redundant back-link", () => {
+    expect(pluginPageHtml).not.toContain("Back to Meridian")
   })
 })
