@@ -4,6 +4,7 @@
  */
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
+import { reorderClientJs, reorderCss, reorderLiveRegionHtml } from "./profileOrder"
 import { WINDOW_LABELS } from "./profileUsage"
 
 export const profilePageHtml = `<!DOCTYPE html>
@@ -29,35 +30,8 @@ export const profilePageHtml = `<!DOCTYPE html>
     padding: 20px; margin-bottom: 12px; transition: border-color 0.2s;
   }
   .profile-card.active { border-color: var(--accent); }
-  .profile-card.dragging { opacity: 0.45; border-color: var(--accent); }
-  .profile-card.drop-target { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .profile-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-
-  /* Reorder affordances. The order this list is in IS the Priority-routing
-     pool order (persisted by PUT /settings/api/routing), so the handle is a
-     real control, not decoration. */
-  .drag-handle {
-    background: none; border: 1px solid transparent; border-radius: 6px;
-    color: var(--muted); cursor: grab; padding: 2px 6px; font-size: 15px;
-    line-height: 1; user-select: none; flex-shrink: 0;
-  }
-  .drag-handle:hover { color: var(--accent); border-color: var(--border); }
-  .drag-handle:focus-visible { outline: none; color: var(--accent); border-color: var(--accent); }
-  .drag-handle:active { cursor: grabbing; }
-  .order-index {
-    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 11px;
-    color: var(--muted); min-width: 16px; text-align: right; flex-shrink: 0;
-  }
-  .order-note { font-size: 12px; color: var(--muted); margin-bottom: 12px; max-width: 620px; }
-  .order-note code {
-    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 11px;
-    background: var(--bg); padding: 1px 5px; border-radius: 4px; color: var(--accent2);
-  }
-  .order-note.locked { color: var(--yellow); }
-  .sr-only {
-    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
-  }
+  ${reorderCss}
   .profile-name { font-size: 16px; font-weight: 600; }
   .profile-badge {
     font-size: 10px; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;
@@ -176,7 +150,7 @@ export const profilePageHtml = `<!DOCTYPE html>
 <div class="subtitle">Manage Claude account profiles</div>
 
 <div id="content"><div style="color:var(--muted);padding:40px;text-align:center">Loading\u2026</div></div>
-<div id="orderStatus" class="sr-only" role="status" aria-live="polite"></div>
+${reorderLiveRegionHtml}
 
 <div class="section" style="margin-top:32px">
   <div class="section-title">Setup Guide</div>
@@ -270,44 +244,11 @@ function formatExtraUsage(eu) {
   };
 }
 
-// Inlined from src/telemetry/profileOrder.ts, unit-tested in
-// profile-order.test.ts — same arrangement as the usage helpers above.
-function moveInOrder(order, from, to) {
-  var next = order.slice();
-  if (from < 0 || from >= next.length) return next;
-  if (to < 0 || to >= next.length) return next;
-  if (from === to) return next;
-  var moved = next.splice(from, 1)[0];
-  next.splice(to, 0, moved);
-  return next;
-}
-
-function sortByOrder(items, order) {
-  // Null-prototype: a profile called "constructor" or "toString" would
-  // otherwise test true against Object.prototype and rank as position 0.
-  var rank = Object.create(null);
-  for (var i = 0; i < order.length; i++) {
-    if (!(order[i] in rank)) rank[order[i]] = i;
-  }
-  return items
-    .map(function (item, index) { return { item: item, index: index }; })
-    .sort(function (a, b) {
-      var ra = a.item.id in rank ? rank[a.item.id] : Number.MAX_SAFE_INTEGER;
-      var rb = b.item.id in rank ? rank[b.item.id] : Number.MAX_SAFE_INTEGER;
-      if (ra !== rb) return ra - rb;
-      return a.index - b.index;
-    })
-    .map(function (entry) { return entry.item; });
-}
+${reorderClientJs}
 
 // Cache the last seen quota response so the /profiles/list refresh can
 // keep showing usage even if a single /v1/usage/quota/all call fails.
 var lastQuota = null;
-// The saved pool order, from the same endpoint /settings writes to — there
-// is one order, not a page-local copy of one.
-var routingCfg = { profileOrder: [], envOverride: {} };
-var dragFromIndex = null;
-var pendingFocusId = null;
 
 async function refresh() {
   try {
@@ -323,7 +264,7 @@ async function refresh() {
     }
     if (quota) lastQuota = quota;
     if (routingRes && routingRes.ok) {
-      try { routingCfg = await routingRes.json(); } catch (_) { /* keep the last good order */ }
+      try { meridianReorder.adopt(await routingRes.json()); } catch (_) { /* keep the last good order */ }
     }
     render(profiles, lastQuota);
   } catch {
@@ -499,15 +440,9 @@ function renderUsageSection(profileQuota) {
 }
 
 function render(data, quotaData) {
-  const profiles = sortByOrder(data.profiles || [], routingCfg.profileOrder || []);
+  const profiles = meridianReorder.sortProfiles(data.profiles || []);
   const active = data.activeProfile;
-  // A poll every 10s replaces this DOM wholesale; without this the keyboard
-  // path loses focus mid-reorder and the next arrow key goes nowhere.
-  const focusedCard = document.activeElement && document.activeElement.closest
-    ? document.activeElement.closest('.drag-handle') && document.activeElement.closest('.profile-card')
-    : null;
-  const refocusId = pendingFocusId || (focusedCard ? focusedCard.dataset.id : null);
-  pendingFocusId = null;
+  const refocusId = meridianReorder.focusAnchor();
   // Build quick lookup: profileId -> per-profile quota entry from
   // /v1/usage/quota/all. Endpoint may be unavailable (older Meridian)
   // or have errored — in that case quotaById is empty and the per-card
@@ -527,29 +462,17 @@ function render(data, quotaData) {
     return;
   }
 
-  const orderPinnedByEnv = !!(routingCfg.envOverride && routingCfg.envOverride.profileOrder);
-  const reorderable = profiles.length > 1 && !orderPinnedByEnv;
+  const reorderable = profiles.length > 1 && !meridianReorder.envPinned();
 
   let html = '<div class="section"><div class="section-title">Configured Profiles</div>';
-  if (profiles.length > 1) {
-    html += reorderable
-      ? '<div class="order-note">Drag a card by its handle to reorder, or focus a handle and press \u2191 / \u2193. '
-        + 'The order is saved, and drives <a href="/settings" style="color:var(--accent)">Priority routing</a> \u2014 the pool drains from the top.</div>'
-      : '<div class="order-note locked">Order is pinned by the <code>MERIDIAN_PROFILE_ORDER</code> environment variable. Unset it to reorder from here.</div>';
-  }
+  if (profiles.length > 1) html += meridianReorder.noteHtml(reorderable);
 
   for (let idx = 0; idx < profiles.length; idx++) {
     const p = profiles[idx];
     const isActive = p.id === active;
     html += '<div class="profile-card' + (isActive ? ' active' : '') + '" data-id="' + esc(p.id) + '" data-index="' + idx + '">';
     html += '<div class="profile-card-header">';
-    if (reorderable) {
-      html += '<span class="order-index">' + (idx + 1) + '</span>';
-      html += '<button type="button" class="drag-handle" draggable="true" data-index="' + idx + '"'
-        + ' title="Drag to reorder, or press \u2191 / \u2193"'
-        + ' aria-label="Reorder ' + esc(p.id) + ', position ' + (idx + 1) + ' of ' + profiles.length
-        + '. Press arrow up or arrow down to move.">\u283f</button>';
-    }
+    if (reorderable) html += meridianReorder.handleHtml(p.id, idx, profiles.length);
     html += '<span class="profile-name">' + esc(p.id) + '</span>';
     if (isActive) html += '<span class="profile-badge badge-active">active</span>';
     html += '<span class="profile-badge badge-type">' + esc(p.type || 'claude-max') + '</span>';
@@ -608,112 +531,8 @@ function render(data, quotaData) {
 
   html += '</div>';
   document.getElementById('content').innerHTML = html;
-
-  if (refocusId) {
-    var cards = document.querySelectorAll('.profile-card');
-    for (var ci = 0; ci < cards.length; ci++) {
-      if (cards[ci].dataset.id !== refocusId) continue;
-      var handle = cards[ci].querySelector('.drag-handle');
-      if (handle) handle.focus();
-      break;
-    }
-  }
+  meridianReorder.restoreFocus(refocusId);
 }
-
-function announce(message) {
-  var live = document.getElementById('orderStatus');
-  if (live) live.textContent = message;
-}
-
-// The rendered order is the truth the server must agree with — read it back
-// off the DOM rather than from routingCfg, which may list ids the current
-// /profiles/list no longer has (PUT rejects unknown ids outright).
-function currentOrderIds() {
-  var ids = [];
-  var cards = document.querySelectorAll('.profile-card[data-id]');
-  for (var i = 0; i < cards.length; i++) ids.push(cards[i].dataset.id);
-  return ids;
-}
-
-async function saveOrder(order, message) {
-  var previous = routingCfg.profileOrder;
-  routingCfg.profileOrder = order;
-  var res = await fetch('/settings/api/routing', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ profileOrder: order })
-  }).catch(function () { return null; });
-  if (!res || !res.ok) {
-    routingCfg.profileOrder = previous;
-    announce('Could not save the new order.');
-  } else if (message) {
-    announce(message);
-  }
-  await refresh();
-}
-
-function clearDragMarks() {
-  var marked = document.querySelectorAll('.profile-card.dragging, .profile-card.drop-target');
-  for (var i = 0; i < marked.length; i++) marked[i].classList.remove('dragging', 'drop-target');
-}
-
-var content = document.getElementById('content');
-
-content.addEventListener('dragstart', function (e) {
-  var handle = e.target.closest && e.target.closest('.drag-handle');
-  if (!handle) return;
-  var card = handle.closest('.profile-card');
-  dragFromIndex = Number(handle.dataset.index);
-  e.dataTransfer.effectAllowed = 'move';
-  // Firefox will not start a drag at all unless the payload is set.
-  e.dataTransfer.setData('text/plain', card.dataset.id || '');
-  if (e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(card, 24, 24);
-  card.classList.add('dragging');
-});
-
-content.addEventListener('dragend', function () {
-  dragFromIndex = null;
-  clearDragMarks();
-});
-
-content.addEventListener('dragover', function (e) {
-  if (dragFromIndex === null) return;
-  var card = e.target.closest && e.target.closest('.profile-card');
-  if (!card) return;
-  // preventDefault is what makes an element a drop target at all.
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-  var marked = document.querySelectorAll('.profile-card.drop-target');
-  for (var i = 0; i < marked.length; i++) marked[i].classList.remove('drop-target');
-  if (Number(card.dataset.index) !== dragFromIndex) card.classList.add('drop-target');
-});
-
-content.addEventListener('drop', function (e) {
-  if (dragFromIndex === null) return;
-  var card = e.target.closest && e.target.closest('.profile-card');
-  if (!card) return;
-  e.preventDefault();
-  var from = dragFromIndex;
-  var to = Number(card.dataset.index);
-  dragFromIndex = null;
-  clearDragMarks();
-  if (from === to) return;
-  var order = currentOrderIds();
-  saveOrder(moveInOrder(order, from, to), order[from] + ' moved to position ' + (to + 1) + ' of ' + order.length + '.');
-});
-
-content.addEventListener('keydown', function (e) {
-  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-  var handle = e.target.closest && e.target.closest('.drag-handle');
-  if (!handle) return;
-  e.preventDefault();
-  var order = currentOrderIds();
-  var from = Number(handle.dataset.index);
-  var to = e.key === 'ArrowUp' ? from - 1 : from + 1;
-  if (to < 0 || to >= order.length) return;
-  pendingFocusId = order[from];
-  saveOrder(moveInOrder(order, from, to), order[from] + ' moved to position ' + (to + 1) + ' of ' + order.length + '.');
-});
 
 function timeAgo(ts) {
   if (!ts) return '\u2014';
@@ -746,9 +565,9 @@ async function switchProfile(id) {
   if (data.success) refresh();
 }
 
+meridianReorder.init({ onSaved: refresh });
 refresh();
-// A poll landing mid-drag would replace the cards being dragged.
-setInterval(function () { if (dragFromIndex === null) refresh(); }, 10000);
+setInterval(function () { if (!meridianReorder.dragging()) refresh(); }, 10000);
 ` + profileBarJs + `
 </script>
 </body>

@@ -2,7 +2,16 @@
  * Unit tests for the profile-reordering helpers — pure functions, no mocks.
  */
 import { describe, expect, it } from "bun:test"
-import { moveInOrder, sortByOrder } from "../telemetry/profileOrder"
+import {
+  EDGE_ZONE_PX,
+  MAX_SCROLL_PX_PER_FRAME,
+  edgeScrollVelocity,
+  moveInOrder,
+  reorderClientJs,
+  sortByOrder,
+} from "../telemetry/profileOrder"
+import { landingHtml } from "../telemetry/landing"
+import { profilePageHtml } from "../telemetry/profilePage"
 
 describe("moveInOrder", () => {
   const base = ["a", "b", "c", "d"]
@@ -78,5 +87,79 @@ describe("sortByOrder", () => {
     const input = [{ id: "alpha" }, { id: "beta" }]
     sortByOrder(input, ["beta", "alpha"])
     expect(input.map((p) => p.id)).toEqual(["alpha", "beta"])
+  })
+})
+
+describe("edgeScrollVelocity", () => {
+  const H = 800
+
+  it("holds still through the middle of the viewport", () => {
+    expect(edgeScrollVelocity(H / 2, H)).toBe(0)
+    expect(edgeScrollVelocity(EDGE_ZONE_PX, H)).toBe(0)
+    expect(edgeScrollVelocity(H - EDGE_ZONE_PX, H)).toBe(0)
+  })
+
+  it("scrolls up near the top edge and down near the bottom", () => {
+    expect(edgeScrollVelocity(10, H)).toBeLessThan(0)
+    expect(edgeScrollVelocity(H - 10, H)).toBeGreaterThan(0)
+  })
+
+  it("ramps with depth into the zone, so a nudge and a fast travel both work", () => {
+    const shallow = Math.abs(edgeScrollVelocity(EDGE_ZONE_PX - 8, H))
+    const deep = Math.abs(edgeScrollVelocity(8, H))
+    expect(shallow).toBeGreaterThan(0)
+    expect(deep).toBeGreaterThan(shallow)
+    expect(deep).toBeLessThanOrEqual(MAX_SCROLL_PX_PER_FRAME)
+  })
+
+  it("clamps at full speed when the pointer leaves the viewport", () => {
+    // Dragging past the edge reports a clientY outside the window; the speed
+    // must cap rather than grow without bound.
+    expect(edgeScrollVelocity(-400, H)).toBe(-MAX_SCROLL_PX_PER_FRAME)
+    expect(edgeScrollVelocity(H + 400, H)).toBe(MAX_SCROLL_PX_PER_FRAME)
+  })
+
+  it("never lets the two zones overlap on a short viewport", () => {
+    // With a 100px window the raw 96px zones would both claim the middle and
+    // the direction would depend on which branch ran first.
+    const short = 100
+    expect(edgeScrollVelocity(short / 2, short)).toBe(0)
+    expect(edgeScrollVelocity(2, short)).toBeLessThan(0)
+    expect(edgeScrollVelocity(short - 2, short)).toBeGreaterThan(0)
+  })
+
+  it("returns 0 rather than NaN for a degenerate viewport", () => {
+    expect(edgeScrollVelocity(10, 0)).toBe(0)
+    expect(edgeScrollVelocity(Number.NaN, H)).toBe(0)
+    expect(edgeScrollVelocity(10, Number.NaN)).toBe(0)
+  })
+})
+
+describe("one gesture implementation, shared by both pages", () => {
+  // The defect being fixed was two pages disagreeing about the order. A second
+  // transcription of the gesture is how that comes back, so assert the pages
+  // interpolate the module rather than carrying their own copies.
+  const marker = "window.meridianReorder = (function () {"
+
+  it("both pages embed the shared client module exactly once", () => {
+    for (const [name, html] of [["landing", landingHtml], ["profiles", profilePageHtml]] as const) {
+      expect(html.split(marker).length - 1, `${name} should embed the gesture once`).toBe(1)
+      expect(html, `${name} should call init`).toContain("meridianReorder.init(")
+      expect(html, `${name} should sort by the persisted order`).toContain("meridianReorder.sortProfiles(")
+    }
+  })
+
+  it("both pages render the drag handle and the live region", () => {
+    for (const [name, html] of [["landing", landingHtml], ["profiles", profilePageHtml]] as const) {
+      expect(html, `${name} needs the handle`).toContain("drag-handle")
+      expect(html, `${name} needs the announcement target`).toContain('id="orderStatus"')
+    }
+  })
+
+  it("the shared module carries the auto-scroll, so both pages get it", () => {
+    expect(reorderClientJs).toContain("edgeScrollVelocity")
+    expect(reorderClientJs).toContain("requestAnimationFrame")
+    expect(reorderClientJs).toContain(`var EDGE_ZONE_PX = ${EDGE_ZONE_PX};`)
+    expect(reorderClientJs).toContain(`var MAX_SCROLL_PX_PER_FRAME = ${MAX_SCROLL_PX_PER_FRAME};`)
   })
 })
