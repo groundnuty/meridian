@@ -38,8 +38,7 @@ export const landingHtml = `<!DOCTYPE html>
   /* Profile cards — the centerpiece: usage + cost per account, click to switch */
   .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 24px; }
   .profile-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    padding: 18px 20px; position: relative;
-    transition: border-color 0.15s, filter 0.2s, opacity 0.2s; }
+    padding: 18px 20px; position: relative; transition: border-color 0.15s; }
   .profile-card.switchable { cursor: pointer; }
   .profile-card.switchable:hover { border-color: var(--accent); }
   .profile-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -47,11 +46,22 @@ export const landingHtml = `<!DOCTYPE html>
   /* Spent accounts recede. --spend-fade is set per card (0..1) from the
      shared classifier; hovering restores the card so a dimmed one can still
      be read. An account that needs a login is NOT dimmed — it needs
-     attention, not fading, so it keeps full contrast and turns red. */
-  .profile-card.spend-fading, .profile-card.spend-spent {
+     attention, not fading, so it keeps full contrast and turns red.
+
+     The fade is on the card's CONTENTS and never on the card, because
+     filter and opacity apply to an element's OWN border and box-shadow.
+     Fading .profile-card therefore greyed out the accent ring on
+     .profile-card.active - the one mark on the page saying which account is
+     serving requests - so the active profile became unfindable the moment it
+     passed 95%, which is precisely when somebody comes looking for it. A
+     descendant cannot undo an ancestor's filter or opacity, so scoping the
+     fade to the children is the only thing that leaves the ring alone; the
+     "Active" pill sits inside those contents and fades with them. */
+  .profile-card.spend-fading > *, .profile-card.spend-spent > * {
     filter: grayscale(var(--spend-fade, 0));
-    opacity: calc(1 - 0.55 * var(--spend-fade, 0)); }
-  .profile-card.spend-fading:hover, .profile-card.spend-spent:hover { filter: none; opacity: 1; }
+    opacity: calc(1 - 0.55 * var(--spend-fade, 0));
+    transition: filter 0.2s, opacity 0.2s; }
+  .profile-card.spend-fading:hover > *, .profile-card.spend-spent:hover > * { filter: none; opacity: 1; }
   .profile-card.needs-login { border-color: var(--red); }
   .profile-card.needs-login .prof-dot { background: var(--red); }
   .spend-pill { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;

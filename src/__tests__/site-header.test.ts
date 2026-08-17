@@ -102,6 +102,22 @@ describe("landing page (at-a-glance dashboard)", () => {
     expect(landingHtml).toContain("needs login")
   })
 
+  test("the fade never reaches the card itself, so the active ring survives it", () => {
+    // filter and opacity apply to an element's OWN border and box-shadow, so
+    // fading .profile-card greys out the accent ring on .profile-card.active -
+    // the one mark saying which account is serving requests, gone exactly when
+    // that account hits 95% and somebody comes looking for it. A descendant
+    // cannot undo an ancestor's filter, so the fade must be scoped to the
+    // card's children.
+    expect(landingHtml).toContain(".profile-card.spend-fading > *, .profile-card.spend-spent > *")
+    expect(landingHtml).toContain(
+      ".profile-card.spend-fading:hover > *, .profile-card.spend-spent:hover > *",
+    )
+    // ...and never as a rule on the card itself, in either state.
+    expect(landingHtml).not.toContain(".profile-card.spend-fading, .profile-card.spend-spent {")
+    expect(landingHtml).not.toContain(".profile-card.spend-fading:hover, .profile-card.spend-spent:hover {")
+  })
+
   test("account cards come from configured profiles, not synthetic cost buckets", () => {
     // With profiles configured, only pl.profiles render (no "default" card);
     // the single-account fallback labels the card with the login email.
