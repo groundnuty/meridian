@@ -40,7 +40,11 @@ CREATE TABLE IF NOT EXISTS metrics (
   cache_creation_input_tokens INTEGER,
   cache_hit_rate       REAL,
   profile_id           TEXT,
-  envelope_violations  TEXT
+  envelope_violations  TEXT,
+  route_kind           TEXT,
+  route_group_id       TEXT,
+  route_attempt        INTEGER,
+  route_refused_bucket TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_metrics_ts    ON metrics(timestamp);
 CREATE INDEX IF NOT EXISTS idx_metrics_model ON metrics(model);
@@ -59,6 +63,10 @@ const METRICS_MIGRATIONS = [
   "ALTER TABLE metrics ADD COLUMN envelope_violations TEXT",
   "ALTER TABLE metrics ADD COLUMN session_queue_wait_ms REAL NOT NULL DEFAULT 0",
   "ALTER TABLE metrics ADD COLUMN sdk_queue_wait_ms REAL NOT NULL DEFAULT 0",
+  "ALTER TABLE metrics ADD COLUMN route_kind TEXT",
+  "ALTER TABLE metrics ADD COLUMN route_group_id TEXT",
+  "ALTER TABLE metrics ADD COLUMN route_attempt INTEGER",
+  "ALTER TABLE metrics ADD COLUMN route_refused_bucket TEXT",
 ]
 
 const LOGS_SCHEMA = `
@@ -110,7 +118,8 @@ class SqliteTelemetryStore implements ITelemetryStore {
         status, queue_wait_ms, session_queue_wait_ms, sdk_queue_wait_ms, proxy_overhead_ms, ttfb_ms,
         upstream_duration_ms, total_duration_ms, content_blocks, text_events, error,
         input_tokens, output_tokens, cache_read_input_tokens,
-        cache_creation_input_tokens, cache_hit_rate, profile_id, envelope_violations
+        cache_creation_input_tokens, cache_hit_rate, profile_id, envelope_violations,
+        route_kind, route_group_id, route_attempt, route_refused_bucket
       ) VALUES (
         @requestId, @timestamp, @adapter, @requestSource, @model, @requestModel, @mode,
         @isResume, @isPassthrough, @lineageType,
@@ -119,7 +128,8 @@ class SqliteTelemetryStore implements ITelemetryStore {
         @status, @queueWaitMs, @sessionQueueWaitMs, @sdkQueueWaitMs, @proxyOverheadMs, @ttfbMs,
         @upstreamDurationMs, @totalDurationMs, @contentBlocks, @textEvents, @error,
         @inputTokens, @outputTokens, @cacheReadInputTokens,
-        @cacheCreationInputTokens, @cacheHitRate, @profileId, @envelopeViolations
+        @cacheCreationInputTokens, @cacheHitRate, @profileId, @envelopeViolations,
+        @routeKind, @routeGroupId, @routeAttempt, @routeRefusedBucket
       )
     `)
 
@@ -167,6 +177,10 @@ class SqliteTelemetryStore implements ITelemetryStore {
         envelopeViolations: metric.envelopeViolations && metric.envelopeViolations.length > 0
           ? JSON.stringify(metric.envelopeViolations)
           : null,
+        routeKind: metric.routeKind ?? null,
+        routeGroupId: metric.routeGroupId ?? null,
+        routeAttempt: metric.routeAttempt ?? null,
+        routeRefusedBucket: metric.routeRefusedBucket ?? null,
       })
     } catch (err) {
       console.error("[telemetry] SQLite write failed, skipping:", err)
@@ -368,6 +382,10 @@ function rowToMetric(r: Record<string, unknown>): RequestMetric {
     cacheHitRate: (r.cache_hit_rate as number) ?? undefined,
     profileId: (r.profile_id as string) ?? undefined,
     envelopeViolations: parseEnvelopeViolations(r.envelope_violations),
+    routeKind: (r.route_kind as RequestMetric["routeKind"]) ?? undefined,
+    routeGroupId: (r.route_group_id as string) ?? undefined,
+    routeAttempt: (r.route_attempt as number) ?? undefined,
+    routeRefusedBucket: (r.route_refused_bucket as string) ?? undefined,
   }
 }
 

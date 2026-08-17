@@ -86,6 +86,46 @@ describe("Telemetry routes", () => {
     expect(body[0]!.model).toBe("opus")
   })
 
+  it("GET /telemetry/requests folds a failover's hops into one row with its chain", async () => {
+    telemetryStore.record(makeMetric({
+      requestId: "hop1", profileId: "corp1", routeKind: "priority-hop",
+      routeGroupId: "g1", routeAttempt: 1, status: 429, error: "rate_limit_error",
+    }))
+    telemetryStore.record(makeMetric({
+      requestId: "hop2", profileId: "corp2", routeKind: "priority-hop",
+      routeGroupId: "g1", routeAttempt: 2,
+    }))
+
+    const res = await app.fetch(new Request("http://localhost/telemetry/requests"))
+    const body = await res.json() as RequestMetric[]
+
+    expect(body).toHaveLength(1)
+    expect(body[0]!.requestId).toBe("hop2")
+    expect(body[0]!.routeKind).toBe("priority")
+    expect(body[0]!.routeChain).toEqual([
+      { profileId: "corp1", ok: false, status: 429, error: "rate_limit_error" },
+      { profileId: "corp2", ok: true, status: 200, error: null },
+    ])
+  })
+
+  it("GET /telemetry/requests?hops=1 returns the raw per-account attempts", async () => {
+    telemetryStore.record(makeMetric({
+      requestId: "hop1", profileId: "corp1", routeKind: "priority-hop",
+      routeGroupId: "g1", routeAttempt: 1, status: 429, error: "rate_limit_error",
+    }))
+    telemetryStore.record(makeMetric({
+      requestId: "hop2", profileId: "corp2", routeKind: "priority-hop",
+      routeGroupId: "g1", routeAttempt: 2,
+    }))
+
+    const res = await app.fetch(new Request("http://localhost/telemetry/requests?hops=1"))
+    const body = await res.json() as RequestMetric[]
+
+    expect(body.map((r) => r.requestId)).toEqual(["hop2", "hop1"])
+    expect(body.every((r) => r.routeKind === "priority-hop")).toBe(true)
+    expect(body.every((r) => r.routeChain === undefined)).toBe(true)
+  })
+
   it("GET /telemetry/summary returns aggregate stats", async () => {
     telemetryStore.record(makeMetric({ totalDurationMs: 100 }))
     telemetryStore.record(makeMetric({ totalDurationMs: 200 }))

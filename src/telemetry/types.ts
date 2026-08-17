@@ -10,6 +10,42 @@
  *   ├──────────────────── total duration ────────────────────────────────────┤
  */
 
+/**
+ * How a request's account was chosen, as rendered in /telemetry's Route column.
+ *
+ * Lives here rather than in proxy/routing.ts because it is part of the
+ * RequestMetric wire shape, and telemetry may never import from proxy —
+ * dependencies flow proxy → telemetry only. `classifyRouteKind` produces it.
+ *
+ * The `-hop` kinds are one INTERNAL attempt of a pool dispatch. They are
+ * separate kinds rather than a flag because the collapsed row has to name the
+ * MODE that produced it: `priority` drains the pool in configured order,
+ * `active+priority` puts the selected account at its head, and those are
+ * different answers to "why this account" even when the chain looks alike.
+ */
+export type RouteKind =
+  | "pinned"
+  | "active"
+  | "sticky"
+  | "priority"
+  | "active+priority"
+  | "priority-hop"
+  | "active+priority-hop"
+
+/** One account attempt within a client request's route. */
+export interface RouteHop {
+  profileId: string
+  /** Whether this attempt succeeded. The LAST hop answered the client
+   *  whether or not it did — a chain ending `ok: false` means the pool ran out. */
+  ok: boolean
+  status: number
+  error: string | null
+  /** Which allowance the account refused on ("five_hour", "seven_day_opus", …)
+   *  when the refusal named one. Absent on hops that did not refuse, and on
+   *  refusals Anthropic never attributed to a window. */
+  refusedBucket?: string
+}
+
 export interface RequestMetric {
   /** Unique request identifier */
   requestId: string
@@ -31,9 +67,35 @@ export interface RequestMetric {
   /** Original model string from the client request (e.g. "claude-sonnet-4-6-20250312") */
   requestModel?: string
 
-  /** Profile that served the request (multi-account); absent on early
-   *  parse-error records where profile resolution never ran. */
+  /** Profile that served the request (multi-account). On records written
+   *  before profile resolution ran this falls back to the pinned profile
+   *  header, and is absent only when there was no pin either. */
   profileId?: string
+
+  /** How that profile was chosen — see proxy/routing.ts classifyRouteKind.
+   *  Absent when the record was written before routing resolved. */
+  routeKind?: RouteKind
+
+  /** Which allowance the serving account refused on, when this request was
+   *  refused and Anthropic's wording or the SDK named a window. Recorded from
+   *  the diagnosis the refusal bookkeeping already produced — nothing extra is
+   *  computed for it. */
+  routeRefusedBucket?: string
+
+  /** Correlates the internal hops of ONE client request. Priority routing
+   *  re-enters the proxy once per candidate account, so a failover writes
+   *  several rows; they share this id (the outer request's id). Absent on
+   *  requests that were never dispatched through the pool. */
+  routeGroupId?: string
+
+  /** 1-based position of this hop within its routeGroupId. */
+  routeAttempt?: number
+
+  /** The full account chain for this client request, oldest attempt first,
+   *  ending with the account that answered. DERIVED at read time by folding
+   *  a routeGroupId's hops together — never stored, never computed on the
+   *  request path. Absent on rows that were not part of a dispatch group. */
+  routeChain?: RouteHop[]
 
   /** Streaming or non-streaming */
   mode: "stream" | "non-stream"

@@ -183,6 +183,41 @@ async function refresh() {
   }
 }
 
+// Colour groups by family — the pool modes share one, the internal hops
+// another — and the badge TEXT carries which mode it actually was. Giving
+// active+priority its own colour would imply a difference in kind where the
+// difference is only in what sits at the head of the pool.
+var ROUTE_KIND_COLOR = {
+  pinned: 'var(--blue)',
+  active: 'var(--muted)',
+  sticky: 'var(--purple)',
+  priority: 'var(--yellow)',
+  'active+priority': 'var(--yellow)',
+  'priority-hop': 'var(--muted)',
+  'active+priority-hop': 'var(--muted)',
+};
+
+// routeChain arrives oldest attempt first; the last entry is the one that answered.
+function routeHtml(r) {
+  var badge = r.routeKind
+    ? '<br><span style="font-size:9px;padding:1px 5px;border-radius:3px;background:'
+      + (ROUTE_KIND_COLOR[r.routeKind] || 'var(--muted)') + ';color:var(--bg)">' + esc(r.routeKind) + '</span>'
+    : '';
+  if (r.routeChain && r.routeChain.length > 0) {
+    return r.routeChain.map(function(h) {
+      var why = h.error || ('status ' + h.status);
+      if (h.refusedBucket) why += ' · ' + h.refusedBucket;
+      return '<span style="color:' + (h.ok ? 'var(--green)' : 'var(--red)') + '" title="'
+        + esc(why) + '">' + esc(h.profileId) + (h.ok ? ' ✓' : ' ✗') + '</span>';
+    }).join('<span style="color:var(--muted)"> → </span>') + badge;
+  }
+  var refused = r.routeRefusedBucket
+    ? ' <span style="color:var(--red);font-size:10px" title="the allowance Anthropic refused on">'
+      + esc(r.routeRefusedBucket) + '</span>'
+    : '';
+  return (r.profileId ? esc(r.profileId) : '—') + refused + badge;
+}
+
 function render(s, reqs, logs) {
   if (s.totalRequests === 0 && (!logs || logs.length === 0)) {
     $('#content').innerHTML = '<div class="empty">No requests recorded yet. Send a request through the proxy to see telemetry.</div>';
@@ -320,7 +355,7 @@ function render(s, reqs, logs) {
     + '<span><span class="legend-dot" style="background:var(--yellow)"></span>Proxy</span>'
     + '<span><span class="legend-dot" style="background:var(--upstream)"></span>Response</span>'
     + '</div>'
-    + '<table><thead><tr><th>Time</th><th>Adapter</th><th>Model</th><th>Mode</th><th>Session</th><th>Status</th>'
+    + '<table><thead><tr><th>Time</th><th>Adapter</th><th>Route</th><th>Model</th><th>Mode</th><th>Session</th><th>Status</th>'
     + '<th>Queue</th><th>Proxy</th><th>TTFB</th><th>Total</th><th>Tokens</th><th>Cache</th><th>Waterfall</th></tr></thead><tbody>';
 
   const maxTotal = Math.max(...reqs.map(r => r.totalDurationMs), 1);
@@ -345,6 +380,7 @@ function render(s, reqs, logs) {
     html += '<tr>'
       + '<td class="mono">' + ago(r.timestamp) + '</td>'
       + '<td>' + (r.adapter || '—') + sourceBadge + '</td>'
+      + '<td>' + routeHtml(r) + '</td>'
       + '<td>' + (r.requestModel || r.model) + '<br><span style="font-size:10px;color:var(--muted)">' + r.model + '</span></td>'
       + '<td>' + r.mode + (r.hasDeferredTools ? (function() { var sessDisc = r.sessionDiscoveredCount || 0; var loaded = ((r.toolCount || 0) - (r.deferredToolCount || 0)) + sessDisc; var deferred = Math.max(0, (r.deferredToolCount || 0) - sessDisc); var newDisc = r.discoveredTools || []; return '<br><span style="font-size:10px;color:var(--purple)">loaded=' + loaded + ' deferred=' + deferred + '</span>' + (newDisc.length > 0 ? '<br><span style="font-size:10px;color:var(--green)">+' + newDisc.join(', +') + '</span>' : ''); })() : '') + '</td>'
       + '<td class="mono">' + sessionShort + ' ' + lineageBadge + envBadge + '<br><span style="font-size:10px;color:var(--muted)">' + msgCount + ' msgs</span></td>'

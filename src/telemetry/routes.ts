@@ -14,6 +14,7 @@ import { Hono } from "hono"
 import { telemetryStore, diagnosticLog } from "./index"
 import { dashboardHtml } from "./dashboard"
 import type { SessionTreeSummary } from "./types"
+import { collapseRouteChains } from "./routeChain"
 
 // Read once at module load — src/telemetry/ is two levels below the package root
 const _iconPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "icon.svg")
@@ -57,7 +58,11 @@ export function createTelemetryRoutes(deps: TelemetryRouteDeps = {}) {
       model,
     })
 
-    return c.json(requests)
+    // Priority failover writes one row per account attempted; fold them back
+    // into one row per client request, carrying the chain. `?hops=1` opts out
+    // and returns the raw attempts.
+    if (c.req.query("hops") === "1") return c.json(requests)
+    return c.json(collapseRouteChains(requests))
   })
 
   // Aggregate summary
