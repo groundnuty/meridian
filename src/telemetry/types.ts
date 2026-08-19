@@ -316,12 +316,46 @@ export interface SessionTreeSummary {
   cancelledDescendants: number
 }
 
+/**
+ * What the store actually holds, so a page can say so instead of implying it
+ * holds everything.
+ *
+ * The dashboard offers a 24-hour window against a ring buffer that is under an
+ * hour of traffic at a working pace, and shows the difference nowhere: the page
+ * looks the same whether a window is empty because nothing happened or because
+ * the rows were overwritten. Reading the source is not an acceptable way to
+ * learn which.
+ */
+export interface TelemetryRetention {
+  /** "memory" is lost on restart; "sqlite" survives it. */
+  kind: "memory" | "sqlite"
+  /** Rows held right now. */
+  held: number
+  /** Ring capacity — the oldest row is dropped past this (memory only). */
+  capacity?: number
+  /** Days before cleanup deletes a row (sqlite only). */
+  retentionDays?: number
+  /** Database file and its size on disk, WAL included (sqlite only). */
+  dbPath?: string
+  dbBytes?: number
+  /**
+   * Timestamp of the oldest row held, null when empty.
+   *
+   * This is the honest bound on every window the page offers: a window
+   * reaching further back than this shows less than it names, whether because
+   * rows were evicted or because the proxy has not been up that long.
+   */
+  oldestTimestamp: number | null
+}
+
 /** Storage backend for request metrics. */
 export interface ITelemetryStore {
   /** Record a completed request metric. */
   record(metric: RequestMetric): void
   /** Number of stored metrics. */
   readonly size: number
+  /** What this store holds and for how long — see TelemetryRetention. */
+  describe(): TelemetryRetention
   /** Retrieve recent metrics, newest first. */
   getRecent(options?: {
     limit?: number

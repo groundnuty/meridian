@@ -1,5 +1,6 @@
 import Database from "libsql"
-import type { RequestMetric, TelemetrySummary, ITelemetryStore, IDiagnosticLogStore, DiagnosticLog } from "./types"
+import { statSync } from "node:fs"
+import type { RequestMetric, TelemetrySummary, ITelemetryStore, IDiagnosticLogStore, DiagnosticLog, TelemetryRetention } from "./types"
 import { computeSummary } from "./percentiles"
 import { getPricingOverrides } from "./pricingStore"
 
@@ -101,12 +102,15 @@ function openDatabase(dbPath: string): Database.Database {
 class SqliteTelemetryStore implements ITelemetryStore {
   private db: Database.Database
   private retentionMs: number
+  private retentionDays: number
   private insertCount = 0
   private insertStmt: Database.Statement
   private countStmt: Database.Statement
+  private oldestStmt: Database.Statement
 
-  constructor(db: Database.Database, retentionDays: number) {
+  constructor(db: Database.Database, retentionDays: number, private readonly dbPath: string) {
     this.db = db
+    this.retentionDays = retentionDays
     this.retentionMs = retentionDays * 24 * 60 * 60 * 1000
 
     this.insertStmt = db.prepare(`
@@ -134,6 +138,9 @@ class SqliteTelemetryStore implements ITelemetryStore {
     `)
 
     this.countStmt = db.prepare("SELECT COUNT(*) as cnt FROM metrics")
+    // Served by idx_metrics_ts, so this stays a b-tree seek rather than the
+    // table scan a MIN() over an unindexed column would be.
+    this.oldestStmt = db.prepare("SELECT MIN(timestamp) as oldest FROM metrics")
   }
 
   record(metric: RequestMetric): void {
@@ -197,6 +204,33 @@ class SqliteTelemetryStore implements ITelemetryStore {
     } catch {
       return 0
     }
+  }
+
+  describe(): TelemetryRetention {
+    let oldestTimestamp: number | null = null
+    try {
+      oldestTimestamp = (this.oldestStmt.get() as { oldest: number | null }).oldest ?? null
+    } catch { /* reported as unknown rather than failing the whole page */ }
+    return {
+      kind: "sqlite",
+      held: this.size,
+      retentionDays: this.retentionDays,
+      dbPath: this.dbPath,
+      dbBytes: this.fileBytes(),
+      oldestTimestamp,
+    }
+  }
+
+  /** Database plus its write-ahead log, which after a busy hour and before a
+   *  checkpoint holds a real share of the bytes on disk. */
+  private fileBytes(): number | undefined {
+    let total: number | undefined
+    for (const suffix of ["", "-wal"]) {
+      try {
+        total = (total ?? 0) + statSync(`${this.dbPath}${suffix}`).size
+      } catch { /* absent: no WAL yet, or the db itself is gone */ }
+    }
+    return total
   }
 
   getRecent(options: { limit?: number; since?: number; model?: string } = {}): RequestMetric[] {
@@ -392,7 +426,7 @@ function rowToMetric(r: Record<string, unknown>): RequestMetric {
 export function createSqliteStores(dbPath: string, retentionDays: number) {
   const db = openDatabase(dbPath)
   return {
-    telemetry: new SqliteTelemetryStore(db, retentionDays) as ITelemetryStore,
+    telemetry: new SqliteTelemetryStore(db, retentionDays, dbPath) as ITelemetryStore,
     diagnostics: new SqliteDiagnosticLogStore(db) as IDiagnosticLogStore,
     close: () => { try { db.close() } catch { /* ignore */ } },
   }

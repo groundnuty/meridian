@@ -161,6 +161,30 @@ describe("Telemetry routes", () => {
     expect(body.byProfile).toEqual({})
   })
 
+  it("GET /telemetry/retention says what the store actually holds", async () => {
+    telemetryStore.record(makeMetric({ timestamp: 1_000 }))
+    telemetryStore.record(makeMetric({ timestamp: 2_000 }))
+
+    const res = await app.fetch(new Request("http://localhost/telemetry/retention"))
+    expect(res.status).toBe(200)
+    const body = await res.json() as {
+      kind: string; held: number; capacity?: number; oldestTimestamp: number | null
+    }
+
+    expect(body.kind).toBe("memory")
+    expect(body.held).toBe(2)
+    expect(body.capacity).toBeGreaterThan(0)
+    expect(body.oldestTimestamp).toBe(1_000)
+  })
+
+  it("GET /telemetry/retention reports an empty store as bounding nothing", async () => {
+    const res = await app.fetch(new Request("http://localhost/telemetry/retention"))
+    const body = await res.json() as { held: number; oldestTimestamp: number | null }
+
+    expect(body.held).toBe(0)
+    expect(body.oldestTimestamp).toBeNull()
+  })
+
   it("GET /telemetry/summary returns aggregate stats", async () => {
     telemetryStore.record(makeMetric({ totalDurationMs: 100 }))
     telemetryStore.record(makeMetric({ totalDurationMs: 200 }))

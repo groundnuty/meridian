@@ -53,6 +53,7 @@ export const dashboardHtml = `<!DOCTYPE html>
   }
   .refresh-bar button:hover { border-color: var(--accent); }
   .refresh-indicator { font-size: 11px; color: var(--muted); }
+  .retention { font-size: 11px; color: var(--muted); margin: -8px 0 16px; }
   .empty { text-align: center; padding: 48px; color: var(--muted); }
 
   /* Tabs */
@@ -97,6 +98,8 @@ export const dashboardHtml = `<!DOCTYPE html>
   <label><input type="checkbox" id="autoRefresh" checked> Auto (5s)</label>
   <span class="refresh-indicator" id="lastUpdate"></span>
 </div>
+
+<div class="retention" id="retention"></div>
 
 <div id="content"><div class="empty">Loading…</div></div>
 
@@ -171,7 +174,7 @@ function setLogFilter(filter) {
 async function refresh() {
   const w = $('#window').value;
   try {
-    const [summary, reqs, logs, routes, health] = await Promise.all([
+    const [summary, reqs, logs, routes, health, retention] = await Promise.all([
       fetch('/telemetry/summary?window=' + w).then(r => r.json()),
       fetch('/telemetry/requests?limit=50&since=' + (Date.now() - Number(w))).then(r => r.json()),
       fetch('/telemetry/logs?limit=200&since=' + (Date.now() - Number(w))).then(r => r.json()),
@@ -180,11 +183,75 @@ async function refresh() {
       // telemetry routes are mounted standalone. The accounts table degrades to
       // "no live state known" rather than failing the whole refresh.
       fetch('/profiles/health').then(r => r.json()).catch(function() { return null; }),
+      fetch('/telemetry/retention').then(r => r.json()),
     ]);
     render(summary, reqs, logs, routes, health);
+    renderRetention(retention);
     $('#lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (e) {
     $('#content').innerHTML = '<div class="empty">Failed to load telemetry</div>';
+  }
+}
+
+function bytes(n) {
+  if (n == null) return null;
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  return (n / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+}
+
+// How far back the data actually goes. Null when the store is empty, which is
+// NOT the same as zero coverage — an empty store constrains no window, whereas
+// a store holding 40 minutes makes every longer window a partial answer.
+function coverageMs(r) {
+  return (r && r.oldestTimestamp) ? Date.now() - r.oldestTimestamp : null;
+}
+
+// One line saying what the page can actually show you. The window selector
+// offers 24 hours against a ring buffer that is well under an hour of traffic
+// here, and until this line existed the page looked identical whether a window
+// was empty because nothing happened or because the rows were overwritten.
+function renderRetention(r) {
+  var el = $('#retention');
+  if (!el || !r) return;
+  var parts = [];
+  var span = coverageMs(r);
+  if (r.kind === 'sqlite') {
+    parts.push(r.held.toLocaleString() + ' request' + (r.held === 1 ? '' : 's') + ' in SQLite');
+    if (r.retentionDays != null) parts.push(r.retentionDays + 'd retention');
+    if (span != null) parts.push('back to ' + ago(r.oldestTimestamp).replace(' ago', ''));
+    var size = bytes(r.dbBytes);
+    if (size) parts.push(size);
+    parts.push('survives restart');
+  } else {
+    parts.push(r.held.toLocaleString() + (r.capacity != null ? ' of ' + r.capacity.toLocaleString() : '') + ' requests in memory');
+    if (span != null) parts.push('back to ' + ago(r.oldestTimestamp).replace(' ago', ''));
+    // Named because it is the surprising half: a dashboard that has been
+    // reporting all day still starts from nothing after a restart, and the
+    // fix — MERIDIAN_TELEMETRY_PERSIST — is not discoverable from the page.
+    parts.push('lost on restart');
+  }
+  el.textContent = parts.join(' · ');
+  el.title = r.kind === 'sqlite'
+    ? 'Persistent telemetry at ' + r.dbPath
+    : 'In-memory ring buffer. Set MERIDIAN_TELEMETRY_PERSIST=1 to keep telemetry across restarts.';
+  annotateWindows(r);
+}
+
+// Mark the windows this store cannot fill. Deliberately NOT disabled: the data
+// grows, a partial answer is still an answer, and a selector that refuses the
+// option a user wants is worse than one that tells them what they will get.
+function annotateWindows(r) {
+  var span = coverageMs(r);
+  var sel = $('#window');
+  if (!sel) return;
+  for (var i = 0; i < sel.options.length; i++) {
+    var opt = sel.options[i];
+    if (!opt.dataset.label) opt.dataset.label = opt.textContent;
+    var short = span != null && Number(opt.value) > span;
+    opt.textContent = opt.dataset.label + (short ? ' — only ' + ago(r.oldestTimestamp).replace(' ago', '') + ' held' : '');
+    opt.style.color = short ? 'var(--muted)' : '';
   }
 }
 
