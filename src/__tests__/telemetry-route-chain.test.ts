@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "bun:test"
 import { classifyRouteKind } from "../proxy/routing"
-import { collapseRouteChains } from "../telemetry/routeChain"
+import { collapseRouteChains, summarizeRoutes } from "../telemetry/routeChain"
 import type { RequestMetric } from "../telemetry"
 
 function makeMetric(overrides: Partial<RequestMetric> = {}): RequestMetric {
@@ -209,5 +209,100 @@ describe("collapseRouteChains", () => {
   it("returns the input untouched when nothing was dispatched through a pool", () => {
     const rows = [makeMetric(), makeMetric()]
     expect(collapseRouteChains(rows)).toBe(rows)
+  })
+})
+
+describe("summarizeRoutes", () => {
+  /** The tally is fed collapsed rows, so build them the way the endpoint does. */
+  function tally(rows: RequestMetric[]) {
+    return summarizeRoutes(collapseRouteChains(rows))
+  }
+
+  it("counts a failover as ONE request, and credits each account its part", () => {
+    const summary = tally([
+      okHop("corp2", 2, "g1", 2_000),
+      failedHop("corp1", 1, "g1", 1_000),
+    ])
+
+    expect(summary.requests).toBe(1)
+    expect(summary.failedOver).toBe(1)
+    expect(summary.unserved).toBe(0)
+    expect(summary.byProfile.corp1).toEqual({ served: 0, refused: 1, refusedBuckets: {} })
+    expect(summary.byProfile.corp2).toEqual({ served: 1, refused: 0, refusedBuckets: {} })
+  })
+
+  it("names which allowance each account was refused on, and how often", () => {
+    const summary = tally([
+      okHop("corp2", 2, "g1", 2_000),
+      { ...failedHop("corp1", 1, "g1", 1_000), routeRefusedBucket: "five_hour" },
+      okHop("corp2", 2, "g2", 4_000),
+      { ...failedHop("corp1", 1, "g2", 3_000), routeRefusedBucket: "five_hour" },
+      okHop("corp2", 2, "g3", 6_000),
+      { ...failedHop("corp1", 1, "g3", 5_000), routeRefusedBucket: "seven_day_opus" },
+    ])
+
+    expect(summary.byProfile.corp1!.refused).toBe(3)
+    expect(summary.byProfile.corp1!.refusedBuckets).toEqual({ five_hour: 2, seven_day_opus: 1 })
+  })
+
+  it("counts a refusal in a mode that never fails over — the row has no chain at all", () => {
+    const summary = tally([
+      makeMetric({
+        profileId: "work",
+        routeKind: "active",
+        status: 429,
+        error: "rate_limit_error",
+        routeRefusedBucket: "five_hour",
+      }),
+    ])
+
+    expect(summary.requests).toBe(1)
+    expect(summary.failedOver).toBe(0)
+    expect(summary.unserved).toBe(1)
+    expect(summary.byProfile.work).toEqual({ served: 0, refused: 1, refusedBuckets: { five_hour: 1 } })
+  })
+
+  it("does NOT blame an account for an upstream outage", () => {
+    const summary = tally([
+      makeMetric({ profileId: "work", routeKind: "active", status: 503, error: "overloaded_error" }),
+    ])
+
+    expect(summary.unserved).toBe(1)
+    expect(summary.byProfile.work).toEqual({ served: 0, refused: 0, refusedBuckets: {} })
+  })
+
+  it("counts a request nobody answered as unserved", () => {
+    const summary = tally([
+      failedHop("corp2", 2, "g1", 2_000),
+      failedHop("corp1", 1, "g1", 1_000),
+    ])
+
+    expect(summary.requests).toBe(1)
+    expect(summary.failedOver).toBe(1)
+    expect(summary.unserved).toBe(1)
+    expect(summary.byProfile.corp1!.refused).toBe(1)
+    expect(summary.byProfile.corp2!.refused).toBe(1)
+  })
+
+  it("tallies how the account was chosen, using the collapsed row's kind", () => {
+    const summary = tally([
+      makeMetric({ profileId: "work", routeKind: "pinned" }),
+      makeMetric({ profileId: "personal", routeKind: "active" }),
+      makeMetric({ profileId: "personal", routeKind: "active" }),
+      okHop("corp2", 2, "g1", 2_000),
+      failedHop("corp1", 1, "g1", 1_000),
+    ])
+
+    expect(summary.byKind).toEqual({ pinned: 1, active: 2, priority: 1 })
+  })
+
+  it("is empty and harmless with nothing recorded", () => {
+    expect(summarizeRoutes([])).toEqual({
+      requests: 0,
+      failedOver: 0,
+      unserved: 0,
+      byKind: {},
+      byProfile: {},
+    })
   })
 })

@@ -95,6 +95,17 @@ async function profilesList(app: TestApp) {
   }
 }
 
+async function health(app: TestApp) {
+  const res = await app.fetch(new Request("http://localhost/profiles/health"))
+  expect(res.status).toBe(200)
+  return await res.json() as {
+    routing: string
+    activeProfile?: string
+    spent: Array<{ profileId: string; until: number | null; diagnosis: { bucket: string | null } }>
+    exhausted: Array<{ id: string; until: number; reason: string }>
+  }
+}
+
 async function events(app: TestApp, since = 0, limit?: number) {
   const url = `http://localhost/profiles/events?since=${since}` + (limit ? `&limit=${limit}` : "")
   const res = await app.fetch(new Request(url))
@@ -283,6 +294,27 @@ describe("refusal reporting", () => {
     expect(rows[0]!.routeRefusedBucket).toBe("five_hour")
     expect(rows[0]!.routeChain).toBeUndefined()
   }, 20_000)
+})
+
+describe("GET /profiles/health", () => {
+  it("reports which accounts are refusing and which are benched", async () => {
+    const app = createTestApp()
+    await setActive(app, "work")
+    failingDirs.add("ap-work")
+    expect((await post(app)).status).toBe(200)
+
+    const page = await health(app)
+    expect(page.routing).toBe("active+priority")
+    expect(page.spent.map(s => s.profileId)).toContain("work")
+    expect(page.spent.find(s => s.profileId === "work")!.diagnosis.bucket).toBe("five_hour")
+    expect(page.exhausted.map(e => e.id)).toContain("work")
+  }, 20_000)
+
+  it("is empty and harmless before anything has gone wrong", async () => {
+    const page = await health(createTestApp())
+    expect(page.spent).toEqual([])
+    expect(page.exhausted).toEqual([])
+  })
 })
 
 describe("GET /profiles/events", () => {

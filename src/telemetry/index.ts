@@ -53,12 +53,15 @@ export { MemoryDiagnosticLogStore } from "./logStore"
 export { createTelemetryRoutes } from "./routes"
 export { landingHtml } from "./landing"
 export { computePercentiles, computeSummary } from "./percentiles"
-export { collapseRouteChains } from "./routeChain"
+export { collapseRouteChains, summarizeRoutes } from "./routeChain"
 export { renderPrometheusMetrics } from "./prometheus"
 export { createSqliteStores } from "./sqlite"
 export type {
   RequestMetric,
   RouteHop,
+  RouteKind,
+  RouteProfileTally,
+  RouteSummary,
   TelemetrySummary,
   PhaseTiming,
   ITelemetryStore,

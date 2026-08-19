@@ -226,6 +226,37 @@ export interface CostEstimate {
   byProfile: Record<string, { requests: number; estimatedUsd: number }>
 }
 
+/** What one account did in a window. */
+export interface RouteProfileTally {
+  /** Requests this account answered. */
+  served: number
+  /** Attempts this account refused, including the ones a failover hid from
+   *  the client — those never reach it as an error, so nothing else counts them. */
+  refused: number
+  /** Refusals by allowance ("five_hour", "seven_day_opus", …), for the ones
+   *  Anthropic attributed to a window. Sums to at most `refused`. */
+  refusedBuckets: Record<string, number>
+}
+
+/**
+ * Where a window's requests went and which accounts refused them.
+ *
+ * DERIVED at read time from collapsed rows (telemetry/routeChain.ts) — nothing
+ * here is stored, and nothing is computed for it on the request path.
+ */
+export interface RouteSummary {
+  /** Client requests in the window. A failover counts ONCE, not once per hop. */
+  requests: number
+  /** Requests that touched more than one account before being answered. */
+  failedOver: number
+  /** Requests no account answered — the client received the refusal. */
+  unserved: number
+  /** How the account was chosen, keyed by RouteKind. */
+  byKind: Record<string, number>
+  /** Per-account tally, keyed by profileId ("default" when a row carried none). */
+  byProfile: Record<string, RouteProfileTally>
+}
+
 export interface TelemetrySummary {
   /** Time window these stats cover */
   windowMs: number

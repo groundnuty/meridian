@@ -171,12 +171,17 @@ function setLogFilter(filter) {
 async function refresh() {
   const w = $('#window').value;
   try {
-    const [summary, reqs, logs] = await Promise.all([
+    const [summary, reqs, logs, routes, health] = await Promise.all([
       fetch('/telemetry/summary?window=' + w).then(r => r.json()),
       fetch('/telemetry/requests?limit=50&since=' + (Date.now() - Number(w))).then(r => r.json()),
       fetch('/telemetry/logs?limit=200&since=' + (Date.now() - Number(w))).then(r => r.json()),
+      fetch('/telemetry/routes?window=' + w).then(r => r.json()),
+      // Lives on the proxy app, not under /telemetry, so it is absent when the
+      // telemetry routes are mounted standalone. The accounts table degrades to
+      // "no live state known" rather than failing the whole refresh.
+      fetch('/profiles/health').then(r => r.json()).catch(function() { return null; }),
     ]);
-    render(summary, reqs, logs);
+    render(summary, reqs, logs, routes, health);
     $('#lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (e) {
     $('#content').innerHTML = '<div class="empty">Failed to load telemetry</div>';
@@ -218,7 +223,102 @@ function routeHtml(r) {
   return (r.profileId ? esc(r.profileId) : '—') + refused + badge;
 }
 
-function render(s, reqs, logs) {
+function until(ts) {
+  if (ts == null) return '';
+  var sec = Math.round((ts - Date.now()) / 1000);
+  if (sec <= 0) return 'any moment';
+  if (sec < 60) return 'in ' + sec + 's';
+  if (sec < 3600) return 'in ' + Math.round(sec/60) + 'm';
+  if (sec < 86400) return 'in ' + Math.round(sec/3600) + 'h';
+  return 'in ' + Math.round(sec/86400) + 'd';
+}
+
+// Shown only once more than one account is in play: with a single account
+// there is nothing to fail over TO, so a permanent "0" would be noise.
+function failoverCard(routes) {
+  if (!routes || !routes.requests) return '';
+  var accounts = Object.keys(routes.byProfile || {}).length;
+  if (routes.failedOver === 0 && routes.unserved === 0 && accounts < 2) return '';
+  var pct = ((routes.failedOver / routes.requests) * 100).toFixed(1);
+  return '<div class="card"><div class="card-label">Failovers</div>'
+    + '<div class="card-value" style="color:' + (routes.failedOver > 0 ? 'var(--yellow)' : 'var(--green)') + '">' + routes.failedOver + '</div>'
+    // Names its own denominator on purpose: the Requests card beside it counts
+    // one per internal hop, so a failover is 2 there and 1 here. Saying just
+    // "% of requests" next to a larger Requests number reads as broken maths.
+    + '<div class="card-detail">' + pct + '% of ' + routes.requests + ' client request' + (routes.requests === 1 ? '' : 's')
+    + (routes.unserved > 0 ? ' · ' + routes.unserved + ' unserved' : '')
+    + '</div></div>';
+}
+
+// One row per account that did anything this window, or that is in trouble
+// right now. Three independent sources keyed by profile id: the route tally
+// (served/refused), the cost rollup, and the live spent/benched state.
+function accountsHtml(routes, s, health) {
+  var cost = (s.costEstimate && s.costEstimate.byProfile) || {};
+  var tally = (routes && routes.byProfile) || {};
+  var spent = {}, benched = {};
+  if (health) {
+    (health.spent || []).forEach(function(x) { spent[x.profileId] = x; });
+    (health.exhausted || []).forEach(function(x) { benched[x.id] = x; });
+  }
+
+  var ids = {};
+  [tally, cost, spent, benched].forEach(function(src) {
+    Object.keys(src).forEach(function(k) { ids[k] = 1; });
+  });
+  var list = Object.keys(ids);
+  if (list.length === 0) return '';
+
+  var anyTrouble = list.some(function(id) {
+    return (tally[id] && tally[id].refused > 0) || spent[id] || benched[id];
+  });
+  // A single-account setup with nothing wrong learns nothing from this table.
+  if (list.length < 2 && !anyTrouble) return '';
+
+  list.sort(function(a, b) {
+    return ((tally[b] && tally[b].served) || 0) - ((tally[a] && tally[a].served) || 0)
+      || ((tally[b] && tally[b].refused) || 0) - ((tally[a] && tally[a].refused) || 0)
+      || a.localeCompare(b);
+  });
+
+  var html = '<div class="section"><div class="section-title">Accounts</div>'
+    + '<table><thead><tr><th>Account</th><th>Served</th><th>Refused</th><th>Refused on</th>'
+    + '<th>Est. Cost</th><th>State</th></tr></thead><tbody>';
+
+  for (var i = 0; i < list.length; i++) {
+    var id = list[i];
+    var t = tally[id] || { served: 0, refused: 0, refusedBuckets: {} };
+    var buckets = Object.keys(t.refusedBuckets || {}).map(function(b) {
+      return esc(b) + ' ×' + t.refusedBuckets[b];
+    }).join(', ');
+
+    var state = '<span style="color:var(--muted)">—</span>';
+    if (spent[id]) {
+      var d = spent[id].diagnosis || {};
+      state = '<span style="color:var(--red)" title="' + esc(d.rationale || '') + '">refusing'
+        + (d.bucket ? ' (' + esc(d.bucket) + (d.reported ? '' : ', guess') + ')' : '')
+        + '</span>'
+        + (spent[id].until ? '<br><span style="font-size:10px;color:var(--muted)">back ' + until(spent[id].until) + '</span>' : '');
+    } else if (benched[id]) {
+      state = '<span style="color:var(--yellow)" title="' + esc(benched[id].reason || '') + '">benched</span>'
+        + '<br><span style="font-size:10px;color:var(--muted)">back ' + until(benched[id].until) + '</span>';
+    }
+
+    html += '<tr>'
+      + '<td>' + esc(id) + (health && health.activeProfile === id ? ' <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:var(--blue);color:var(--bg)">active</span>' : '') + '</td>'
+      + '<td class="mono">' + t.served + '</td>'
+      + '<td class="mono"' + (t.refused > 0 ? ' style="color:var(--red)"' : '') + '>' + t.refused + '</td>'
+      + '<td class="mono" style="font-size:11px;color:var(--muted)">' + (buckets || '—') + '</td>'
+      + '<td class="mono">' + (cost[id] ? usd(cost[id].estimatedUsd) : '—') + '</td>'
+      + '<td>' + state + '</td>'
+      + '</tr>';
+  }
+  return html + '</tbody></table>'
+    + '<div class="usage-note" style="margin-top:8px">Refusals include the ones a failover hid from the client,'
+    + ' which never reach the client as an error and are counted nowhere else.</div></div>';
+}
+
+function render(s, reqs, logs, routes, health) {
   if (s.totalRequests === 0 && (!logs || logs.length === 0)) {
     $('#content').innerHTML = '<div class="empty">No requests recorded yet. Send a request through the proxy to see telemetry.</div>';
     return;
@@ -246,6 +346,7 @@ function render(s, reqs, logs) {
   html += '<div class="cards">'
     + card('Requests', s.totalRequests, s.requestsPerMinute.toFixed(1) + ' req/min')
     + card('Errors', s.errorCount, s.totalRequests > 0 ? ((s.errorCount/s.totalRequests)*100).toFixed(1) + '% error rate' : '')
+    + failoverCard(routes)
     + '<div class="card"><div class="card-label">Envelope</div><div class="card-value" style="color:' + ((s.envelopeViolationCount || 0) > 0 ? 'var(--red)' : 'var(--green)') + '">' + (s.envelopeViolationCount || 0) + '</div><div class="card-detail">' + ((s.envelopeViolationCount || 0) > 0 ? 'wire-contract violations — check logs' : 'wire contract clean') + '</div></div>'
     + card('Median Total', ms(s.totalDuration.p50), 'p95: ' + ms(s.totalDuration.p95))
     + card('Median TTFB', ms(s.ttfb.p50), 'p95: ' + ms(s.ttfb.p95))
@@ -259,6 +360,8 @@ function render(s, reqs, logs) {
             s.sessionTree.linked + ' linked live / ' + s.sessionTree.propagations + ' propagations')
         : '')
     + '</div>';
+
+  html += accountsHtml(routes, s, health);
 
   // Token usage cards
   if (s.tokenUsage) {

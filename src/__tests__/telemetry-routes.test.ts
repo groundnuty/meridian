@@ -126,6 +126,41 @@ describe("Telemetry routes", () => {
     expect(body.every((r) => r.routeChain === undefined)).toBe(true)
   })
 
+  it("GET /telemetry/routes tallies a failover as one request across two accounts", async () => {
+    telemetryStore.record(makeMetric({
+      requestId: "hop1", profileId: "corp1", routeKind: "priority-hop",
+      routeGroupId: "g1", routeAttempt: 1, status: 429, error: "rate_limit_error",
+      routeRefusedBucket: "five_hour",
+    }))
+    telemetryStore.record(makeMetric({
+      requestId: "hop2", profileId: "corp2", routeKind: "priority-hop",
+      routeGroupId: "g1", routeAttempt: 2,
+    }))
+    telemetryStore.record(makeMetric({ requestId: "plain", profileId: "corp2", routeKind: "active" }))
+
+    const res = await app.fetch(new Request("http://localhost/telemetry/routes"))
+    expect(res.status).toBe(200)
+    const body = await res.json() as import("../telemetry").RouteSummary & { windowMs: number }
+
+    expect(body.requests).toBe(2)
+    expect(body.failedOver).toBe(1)
+    expect(body.unserved).toBe(0)
+    expect(body.byKind).toEqual({ priority: 1, active: 1 })
+    expect(body.byProfile.corp1).toEqual({ served: 0, refused: 1, refusedBuckets: { five_hour: 1 } })
+    expect(body.byProfile.corp2).toEqual({ served: 2, refused: 0, refusedBuckets: {} })
+  })
+
+  it("GET /telemetry/routes honours the window and is empty when nothing is in it", async () => {
+    telemetryStore.record(makeMetric({ timestamp: Date.now() - 7_200_000, profileId: "corp1" }))
+
+    const res = await app.fetch(new Request("http://localhost/telemetry/routes?window=60000"))
+    const body = await res.json() as import("../telemetry").RouteSummary & { windowMs: number }
+
+    expect(body.windowMs).toBe(60000)
+    expect(body.requests).toBe(0)
+    expect(body.byProfile).toEqual({})
+  })
+
   it("GET /telemetry/summary returns aggregate stats", async () => {
     telemetryStore.record(makeMetric({ totalDurationMs: 100 }))
     telemetryStore.record(makeMetric({ totalDurationMs: 200 }))

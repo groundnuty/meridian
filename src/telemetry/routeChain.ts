@@ -11,7 +11,7 @@
  * Pure — no I/O, no store access, no clock.
  */
 
-import type { RequestMetric, RouteHop, RouteKind } from "./types"
+import type { RequestMetric, RouteHop, RouteKind, RouteProfileTally, RouteSummary } from "./types"
 
 /** Ascending attempt order; timestamp breaks ties (hops can land in the
  *  same millisecond when an account rejects instantly). */
@@ -92,4 +92,52 @@ function collapseGroup(hops: RequestMetric[]): RequestMetric {
     routeKind: collapsedRouteKind(answering.routeKind),
     routeChain: ordered.map(toHop),
   }
+}
+
+/**
+ * Errors that mean THIS ACCOUNT said no, as opposed to Anthropic having a bad
+ * minute. Only these count as refusals: an `overloaded_error` or a
+ * `upstream_timeout` says nothing about the account, and tallying it would
+ * blame an account for an outage — the exact misattribution this tally exists
+ * to prevent. Matches the set the pool router itself fails over on.
+ */
+const ACCOUNT_REFUSALS: ReadonlySet<string> = new Set(["rate_limit_error", "billing_error"])
+
+/**
+ * Tally where a window's requests went and which accounts refused them.
+ *
+ * Pure, and read-path only — same as everything else in this module.
+ *
+ * @param collapsed Rows from collapseRouteChains, i.e. one per CLIENT request.
+ *                  Passing raw hops would count a failover once per account.
+ */
+export function summarizeRoutes(collapsed: RequestMetric[]): RouteSummary {
+  const byKind: Record<string, number> = {}
+  const byProfile: Record<string, RouteProfileTally> = {}
+  let failedOver = 0
+  let unserved = 0
+
+  for (const metric of collapsed) {
+    if (metric.routeKind) byKind[metric.routeKind] = (byKind[metric.routeKind] ?? 0) + 1
+    // A row that never went through a pool still describes one account
+    // attempt, and in active/sticky mode that is the ONLY place a refusal
+    // shows up — no chain is ever built for it.
+    const chain = metric.routeChain ?? [toHop(metric)]
+    if (chain.length > 1) failedOver++
+    if (!chain[chain.length - 1]!.ok) unserved++
+    for (const hop of chain) {
+      const tally = (byProfile[hop.profileId] ??= { served: 0, refused: 0, refusedBuckets: {} })
+      if (hop.ok) {
+        tally.served++
+        continue
+      }
+      if (!hop.error || !ACCOUNT_REFUSALS.has(hop.error)) continue
+      tally.refused++
+      if (hop.refusedBucket) {
+        tally.refusedBuckets[hop.refusedBucket] = (tally.refusedBuckets[hop.refusedBucket] ?? 0) + 1
+      }
+    }
+  }
+
+  return { requests: collapsed.length, failedOver, unserved, byKind, byProfile }
 }
