@@ -38,7 +38,7 @@ export const profilePageHtml = `<!DOCTYPE html>
   .badge-active { background: rgba(88,166,255,0.15); color: var(--accent); }
   .badge-type { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
   .badge-spent { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.35); }
-  .spent-note { margin-top: 10px; padding: 10px 14px; border-radius: 8px; font-size: 12px; line-height: 1.5;
+  .spent-note { margin: 10px 0; padding: 10px 14px; border-radius: 8px; font-size: 12px; line-height: 1.5;
     background: rgba(248,81,73,0.08); border: 1px solid rgba(248,81,73,0.3); color: var(--text); }
   .spent-note .spent-why { color: var(--muted); }
   .profile-details {
