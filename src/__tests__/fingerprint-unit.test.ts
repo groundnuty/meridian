@@ -90,3 +90,43 @@ describe("getConversationFingerprint", () => {
     expect(fpAll).toBe(fpFirst)
   })
 })
+
+describe("getConversationFingerprint reminder stripping", () => {
+  const bigReminder = (cwd: string) =>
+    `<system-reminder>\n# Environment\n - Primary working directory: ${cwd}\n${"x".repeat(2400)}\n</system-reminder>`
+
+  it("same reminder noise, different task text -> different fingerprints", () => {
+    const fp1 = getConversationFingerprint([{
+      role: "user",
+      content: [{ type: "text", text: bigReminder("/repo") }, { type: "text", text: "Remember the code: AAAA" }],
+    }], "/repo")
+    const fp2 = getConversationFingerprint([{
+      role: "user",
+      content: [{ type: "text", text: bigReminder("/repo") }, { type: "text", text: "Remember the code: BBBB" }],
+    }], "/repo")
+    expect(fp1).not.toBe(fp2)
+  })
+
+  it("task text plus reminder noise matches bare task text", () => {
+    const withReminder = [{
+      role: "user",
+      content: [{ type: "text", text: bigReminder("/repo") }, { type: "text", text: "fix the login bug" }],
+    }]
+    const bare = [{ role: "user", content: "fix the login bug" }]
+    expect(getConversationFingerprint(withReminder, "/repo")).toBe(getConversationFingerprint(bare, "/repo"))
+  })
+
+  it("reminder-only text falls back to the raw text window", () => {
+    const a = [{ role: "user", content: bigReminder("/repo") }]
+    const b = [{ role: "user", content: bigReminder("/other-repo") }]
+    expect(getConversationFingerprint(a, "/repo")).toHaveLength(16)
+    expect(getConversationFingerprint(a, "/repo")).not.toBe(getConversationFingerprint(b, "/repo"))
+  })
+
+  it("strips multiple reminder blocks", () => {
+    const two = "<system-reminder>\nfirst\n</system-reminder>\nmiddle\n<system-reminder>\nsecond\n</system-reminder>"
+    const fpStripped = getConversationFingerprint([{ role: "user", content: two }])
+    const fpBare = getConversationFingerprint([{ role: "user", content: "middle" }])
+    expect(fpStripped).toBe(fpBare)
+  })
+})

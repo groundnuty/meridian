@@ -41,6 +41,9 @@ export function extractClientCwd(body: any): string | undefined {
  * contains dynamic file trees/diagnostics that change every request).
  * This prevents cross-project collisions when different projects start
  * with the same first message.
+ * <system-reminder> blocks injected into the first user message are stripped
+ * before hashing: they are per-machine environment noise, not conversation
+ * identity, and can otherwise dominate the hash window.
  */
 export function getConversationFingerprint(messages: Array<{ role: string; content: any }>, workingDirectory?: string): string {
   const firstUser = messages?.find((m) => m.role === "user")
@@ -51,7 +54,16 @@ export function getConversationFingerprint(messages: Array<{ role: string; conte
       ? firstUser.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("")
       : ""
   if (!text) return ""
-  const seed = workingDirectory ? `${workingDirectory}\n${text.slice(0, 2000)}` : text.slice(0, 2000)
+  // Client-injected <system-reminder> blocks (environment capture, tool
+  // manifests, dynamic context) are identical across conversations in the
+  // same project and can exceed the slice window, so distinct conversations
+  // collided on one key and diverged as unrelated-history. Hash the user's
+  // actual request instead; reminders are replayed verbatim each turn, so
+  // stripping preserves within-conversation stability. A reminder-only
+  // message keeps the raw-text window (no behavior change there).
+  const taskText = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim()
+  const seedText = taskText || text
+  const seed = workingDirectory ? `${workingDirectory}\n${seedText.slice(0, 2000)}` : seedText.slice(0, 2000)
   return createHash("sha256").update(seed).digest("hex").slice(0, 16)
 }
 
