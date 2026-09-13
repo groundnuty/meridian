@@ -129,4 +129,32 @@ describe("getConversationFingerprint reminder stripping", () => {
     const fpBare = getConversationFingerprint([{ role: "user", content: "middle" }])
     expect(fpStripped).toBe(fpBare)
   })
+
+  it("reminder-only opener seeds from the next user message with task text", () => {
+    // Droid wire shape: message 0 is all environment reminders (machine-global),
+    // the actual request arrives as a later user message.
+    const reminderOnly = { role: "user", content: [{ type: "text", text: bigReminder("/repo") }] }
+    const droidShape = [reminderOnly, { role: "user", content: "fix the login bug" }]
+    const bare = [{ role: "user", content: "fix the login bug" }]
+    expect(getConversationFingerprint(droidShape, "/repo")).toBe(getConversationFingerprint(bare, "/repo"))
+  })
+
+  it("reminder-only opener with different follow-up prompts -> different fingerprints", () => {
+    const reminderOnly = { role: "user", content: [{ type: "text", text: bigReminder("/repo") }] }
+    const fp1 = getConversationFingerprint([reminderOnly, { role: "user", content: "fix the login bug" }], "/repo")
+    const fp2 = getConversationFingerprint([reminderOnly, { role: "user", content: "try again?" }], "/repo")
+    expect(fp1).not.toBe(fp2)
+  })
+
+  it("reminder-only opener is stable as the conversation grows", () => {
+    const reminderOnly = { role: "user", content: [{ type: "text", text: bigReminder("/repo") }] }
+    const early = [reminderOnly, { role: "user", content: "fix the login bug" }]
+    const later = [
+      reminderOnly,
+      { role: "user", content: "fix the login bug" },
+      { role: "assistant", content: "on it" },
+      { role: "user", content: "what changed?" },
+    ]
+    expect(getConversationFingerprint(early, "/repo")).toBe(getConversationFingerprint(later, "/repo"))
+  })
 })
