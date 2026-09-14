@@ -6,6 +6,7 @@ const symbols = ['◉', '◷', '⇄', '≡', '◈', '↓', '◇', '⚙']
 let page: Page = 'Overview'
 let state: DesktopState | undefined
 let filter = ''
+let renderedKey = ''
 const el = (id: string) => { const element = document.getElementById(id); if (!element) throw new Error(`Missing ${id}`); return element }
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char)
 const count = (value: unknown) => number(value)?.toLocaleString(undefined, { maximumFractionDigits: 1 }) ?? '—'
@@ -27,6 +28,17 @@ async function action(name: Action, value?: unknown) {
   try { update(await window.meridian.action(name, value)); el('content').replaceChildren(); renderContent(); renderNav() }
   catch (error) { el('notice').textContent = error instanceof Error ? error.message : String(error); el('notice').className = 'notice error' }
 }
+function contentKey() {
+  if (!state) return 'loading'
+  const shared = [page, state.owned, state.running, state.busy, state.preferences, state.login]
+  if (page === 'Service') return JSON.stringify(shared)
+  if (page === 'Versions') return JSON.stringify([...shared, state.installed, state.available, state.latest])
+  if (page === 'Settings') return JSON.stringify([...shared, state.features, state.glass, state.loginAtStartup])
+  if (page === 'Plugins') return JSON.stringify([...shared, state.plugins])
+  if (page === 'Requests') return JSON.stringify([...shared, state.requests])
+  if (page === 'Logs') return JSON.stringify([...shared, state.logs, state.serviceLog, state.incidents])
+  return JSON.stringify([...shared, state.health, state.quota, state.profiles, state.requests, state.summary])
+}
 function update(next: DesktopState) {
   state = next
   document.documentElement.classList.toggle('native-glass', next.glass === 'Native Liquid Glass')
@@ -42,7 +54,7 @@ function update(next: DesktopState) {
   el('notice').className = el('notice').textContent ? 'notice' : ''
   // Preserve editing focus across background polling. Explicit navigation and
   // completed actions rebuild the content, so settings can still reflect saves.
-  if (!el('content').contains(document.activeElement) || !document.activeElement?.matches('input, select, textarea')) renderContent()
+  if (contentKey() !== renderedKey && (!el('content').contains(document.activeElement) || !document.activeElement?.matches('input, select, textarea'))) renderContent()
   const footer = document.querySelector('footer > span'); if (footer) footer.textContent = next.preferences.mode === 'managed' ? next.owned ? 'App managed · closing this window keeps Meridian running' : 'App-managed installation · service stopped' : 'Connected services keep their existing supervisor'
 }
 function stats() {
@@ -83,6 +95,7 @@ function activity() {
   }).join('')}</svg><div class="chart-caption"><span>Earlier requests</span><span>Latest · ${requests.length} requests</span></div>`
 }
 function renderContent() {
+  renderedKey = contentKey()
   const current = state
   if (!current) { el('content').innerHTML = empty('Connecting to Meridian', 'Reading service health and telemetry…'); return }
   const health = object(current.health)
