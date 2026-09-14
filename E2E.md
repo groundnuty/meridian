@@ -4783,3 +4783,47 @@ curl ... -H 'x-polytoken-session:   '
 returned `LINES=4` in four client round-trips with `adapter=polytoken` and
 `lineage=continuation` from turn 2, unchanged with `MERIDIAN_PASSTHROUGH=0`. All
 four detection controls behaved as recorded above.
+
+## Desktop interface preview
+
+Build and package using `apps/desktop/README.md`. In the actual Mac app:
+
+1. Connect to an existing headless instance and verify health, quota errors,
+   request history, and cache data without changing its supervisor.
+2. Install two published releases through Versions. Select app management on a
+   separate port, start, restart, switch versions, and roll back.
+3. Close the window and verify the owned listener stays alive in the menu bar.
+   Quit the app and verify only its owned listener drains/stops.
+4. Verify a new request failure produces an in-app incident. Separately verify
+   opt-in native notification delivery, profile sign-in completion and feature
+   mutations before release.
+
+For the required real SDK/model continuation gate, start the service through
+that app, then run:
+
+```sh
+E2E_MERIDIAN_URL=http://127.0.0.1:3489 \
+E2E_DESKTOP_FIXTURE=/tmp/meridian-desktop-conversation.json \
+E2E_PROFILE=work node scripts/e2e-desktop-request.mjs --live
+```
+
+Use a new disposable fixture file for each independent run. Repeat with the
+same file after a UI restart/version switch; the model must recall the marker
+and the fixture records the versions used. `E2E_MODEL` chooses the actual model;
+`E2E_MERIDIAN_API_KEY` supplies authentication if the local service requires it.
+The script does not start services or modify account configuration.
+
+2026-09-14: the actual unsigned arm64 Electron app initialized native Liquid
+Glass and connected to Meridian 1.67.0 on localhost:3456. It displayed real
+profiles/history/cache data and explicit unavailable quota results. Through the
+app, a separate copy of 1.71.1 was installed and started on 3489; 1.71.0 was
+installed and activated, followed by rollback to 1.71.1. The original headless
+service stayed on 3456 throughout. Closing the app window retained the owned
+listener; quitting the app stopped 3489 and left 3456 healthy.
+
+The real `claude-haiku-4-5` request reached the installed SDK but returned HTTP
+500: `OAuth session expired and could not be refreshed`. This is **missing live
+success evidence**, not a pass. Successful responses/continuations after
+restart and switching remain gated on reauthentication. Automated launchd
+handoff, native notifications, completed sign-in, Windows, and Linux are not
+established by these checks. Do not release or enable handoff based on them.
