@@ -19,6 +19,21 @@ async function invoke(action: string, value?: unknown) {
   try { await dispatch(manager, action, value) }
   catch (error) { await dialog.showMessageBox({ type: 'error', message: 'Meridian could not complete that action', detail: String(error) }) }
 }
+const notifications = new Set<Notification>()
+function showNotification(title: string, body: string) {
+  if (!Notification.isSupported()) throw new Error('Native notifications are not supported on this system.')
+  const notification = new Notification({ title, body })
+  notifications.add(notification)
+  notification.on('click', show)
+  notification.once('show', () => { manager.state.notificationStatus = 'Delivered to macOS'; manager.publish() })
+  notification.once('close', () => notifications.delete(notification))
+  notification.once('failed', (_event, error) => {
+    notifications.delete(notification)
+    manager.state.notificationStatus = `Delivery failed: ${error}`; manager.publish()
+  })
+  manager.state.notificationStatus = 'Requested; waiting for the system'
+  manager.publish(); notification.show()
+}
 function updateTray(state: DesktopState) {
   tray?.setToolTip(`Meridian · ${state.running ? state.owned ? 'Managed' : 'Connected' : 'Stopped'}`)
   tray?.setContextMenu(Menu.buildFromTemplate([
@@ -49,7 +64,7 @@ else {
       },
       decrypt: value => safeStorage.decryptString(Buffer.from(value, 'base64')),
       changed: state => { if (window && !window.isDestroyed()) window.webContents.send('meridian:state', state); updateTray(state) },
-      notify: incident => { if (Notification.isSupported()) { const notification = new Notification({ title: incident.title, body: incident.detail }); notification.on('click', show); notification.show() } },
+      notify: incident => { try { showNotification(incident.title, incident.detail) } catch (error) { manager.log(String(error)) } },
     })
     await manager.init()
     let glass: NativeGlass | undefined
@@ -71,7 +86,9 @@ else {
     ipcMain.handle('meridian:state', event => { trusted(event); return manager.snapshot() })
     ipcMain.handle('meridian:action', async (event, action: unknown, value: unknown) => {
       trusted(event)
-      if (action === 'login-at-startup') {
+      if (action === 'test-notification') {
+        showNotification('Meridian notifications are ready', 'This is a test from Meridian Desktop. Your services were not changed.')
+      } else if (action === 'login-at-startup') {
         if (process.platform !== 'darwin' || !app.isPackaged) throw new Error('Login startup is available in the packaged Mac app.')
         if (typeof value !== 'boolean') throw new Error('Invalid login preference.')
         app.setLoginItemSettings({ openAtLogin: value })
