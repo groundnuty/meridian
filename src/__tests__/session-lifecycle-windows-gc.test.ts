@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -6,6 +7,7 @@ import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import {
   abandonFork,
+  getSessionGcNodeExecutable,
   getTranscriptResourceKey,
   prepareFork,
   reconcile,
@@ -103,6 +105,22 @@ function readSidecar(storeDir: string): StoredSidecar {
 }
 
 describe("session GC deletes retired transcripts on every platform", () => {
+  test("launches multiline deletion code in the exact Node process, even through a PATH shim", async () => {
+    const child = spawn(getSessionGcNodeExecutable(), ["--input-type=module", "--eval", `
+console.log(JSON.stringify({ pid: process.pid, bun: process.versions.bun ?? null }));
+`], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
+    let output = ""
+    child.stdout.on("data", (chunk) => { output += chunk.toString() })
+    const status = await new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject)
+      child.once("close", resolve)
+    })
+    expect(status).toBe(0)
+    // Resolving a shim path or flattening the eval string is insufficient:
+    // the handle used for joining must belong to the actual executor.
+    expect(JSON.parse(output)).toEqual({ pid: child.pid, bun: null })
+  }, 15_000)
+
   test("runGc drives a retired transcript to deleted through the default fenced child", async () => {
     const fixture = await makeFixture("windows-gc-retired")
     const options = gcOptions(fixture)

@@ -1804,8 +1804,28 @@ function isNotFoundError(error: unknown, sessionId: string): boolean {
 }
 
 /** Resolve a real Node runtime even when Meridian itself is bundled under Bun. */
+let sessionGcNodeExecutable: string | undefined
+
 export function getSessionGcNodeExecutable(): string {
-  return typeof process.versions.bun === "string" ? "node" : process.execPath
+  if (typeof process.versions.bun !== "string") return process.execPath
+  if (sessionGcNodeExecutable) return sessionGcNodeExecutable
+
+  // PATH may select a version-manager shim rather than Node. Volta on Windows
+  // loses multiline --eval arguments, and its PID identifies the shim instead
+  // of the executor we need to fence. Use a short single-line probe, then spawn
+  // the actual Node binary directly. Cache only successful resolutions.
+  const probe = spawnSync("node", ["-p", "process.execPath"], {
+    encoding: "utf8",
+    timeout: 5_000,
+    maxBuffer: 16 * 1024,
+    windowsHide: true,
+  })
+  const executable = probe.stdout?.trim()
+  if (probe.error || probe.status !== 0 || !executable || !isAbsolute(executable)) {
+    throw new SessionLifecycleError("cannot resolve Node executable for session deletion")
+  }
+  sessionGcNodeExecutable = realpathSync(executable)
+  return sessionGcNodeExecutable
 }
 
 function errorMessage(error: unknown): string {
