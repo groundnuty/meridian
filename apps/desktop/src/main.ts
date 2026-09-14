@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, safeStorage, nativeTheme, Tray, nati
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Manager } from './manager'
+import { loadNativeGlass, type NativeGlass } from './nativeGlass'
 import { desktopWindowColors } from '../../../src/telemetry/profileBar'
 import { object, text, version } from './core'
 import { dispatch } from './actions'
@@ -51,9 +52,9 @@ else {
       notify: incident => { if (Notification.isSupported()) { const notification = new Notification({ title: incident.title, body: incident.detail }); notification.on('click', show); notification.show() } },
     })
     await manager.init()
-    let glass: typeof import('electron-liquid-glass').default | undefined
+    let glass: NativeGlass | undefined
     if (process.platform === 'darwin') {
-      try { const candidate = (await import('electron-liquid-glass')).default; if (candidate.isGlassSupported()) glass = candidate }
+      try { glass = await loadNativeGlass() }
       catch (error) { manager.log(`Native glass unavailable: ${String(error)}`) }
     }
     window = new BrowserWindow({

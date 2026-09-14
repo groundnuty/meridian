@@ -12,7 +12,6 @@
     "package:mac": "npm run build && electron-builder --mac --dir --publish never"
   },
   "dependencies": {
-    "electron-liquid-glass": "1.1.1",
     "node": "22.23.2",
     "npm": "11.19.1"
   },
@@ -56,5 +55,8 @@
       ],
       "icon": "dist/icon.png"
     }
+  },
+  "optionalDependencies": {
+    "electron-liquid-glass": "1.1.1"
   }
 }
