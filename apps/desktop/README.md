@@ -102,4 +102,6 @@ account's OAuth session was expired and could not refresh. Successful model
 responses across restart/version switching remain a required gate; see
 [`E2E.md`](../../E2E.md#desktop-interface-preview). Automatic takeover, system
 notification delivery, sign-in completion and other platforms also need live
-verification before release. This work is not release-ready.
+verification before release. The native notification test reported
+`UNErrorDomain error 1`, which is displayed in Settings; delivery has not passed.
+This work is not release-ready.

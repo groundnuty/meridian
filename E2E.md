@@ -4825,5 +4825,8 @@ The real `claude-haiku-4-5` request reached the installed SDK but returned HTTP
 500: `OAuth session expired and could not be refreshed`. This is **missing live
 success evidence**, not a pass. Successful responses/continuations after
 restart and switching remain gated on reauthentication. Automated launchd
-handoff, native notifications, completed sign-in, Windows, and Linux are not
-established by these checks. Do not release or enable handoff based on them.
+handoff, completed sign-in, Windows, and Linux runtime behavior are not
+established by these checks. The native notification test returned
+`UNErrorDomain error 1`; the app displayed the delivery failure. Successful
+system notification delivery remains unverified. Do not release or enable
+handoff based on these checks.
