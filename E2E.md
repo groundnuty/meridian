@@ -4830,3 +4830,15 @@ established by these checks. The native notification test returned
 `UNErrorDomain error 1`; the app displayed the delivery failure. Successful
 system notification delivery remains unverified. Do not release or enable
 handoff based on these checks.
+
+2026-09-15 UI refinement: the packaged Mac app displayed the external service's
+500-request history. Searching `openai` returned two matches; opening one showed
+its date, account/client, timing breakdown, token counts and full request/session
+IDs. Account cards showed unavailable usage explicitly. Service, Versions,
+Plugins and Settings displayed the external owner, separately installed releases,
+three active plugins and native Liquid Glass. An unsaved connection-address
+edit survived background polling and was restored without submitting it.
+Diagnostic inspection exposed an older-event slicing bug; the corrected view
+sorts all fetched events newest first, with a direct regression test. These
+read-only UI checks do not resolve the live model, sign-in, notification or
+platform gates above.

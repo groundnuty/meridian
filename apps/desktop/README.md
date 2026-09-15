@@ -69,8 +69,10 @@ containers, system services and declarative installations stay externally owned.
 
 - Live health, profiles, quota windows/reset times, request history and cache
   history; polling pauses during lifecycle operations.
-- Request filtering, diagnostic logs, and separate managed process/installer
-  output.
+- Search requests by model, account, client or ID; filter failures and low-cache
+  continuations. Open a request for timing, token counts and session identifiers.
+- Separate searchable views for alerts, diagnostic events and managed
+  process/installer output.
 - Opt-in notifications for newly observed failures, repeated low-cache
   continuations, and fresh quota crossings at 80% and 95%. Existing history is
   seeded without replaying a notification storm on launch.

@@ -348,6 +348,10 @@ The main process validates the sender and performs local HTTP requests against
 existing Meridian endpoints. No server API or plugin contract changes are
 required. Native Liquid Glass loads only on supported macOS systems.
 
+The renderer keeps page navigation and unsaved forms local. `uiData.ts` filters
+request metadata without inspecting arbitrary nested content; direct tests cover
+combined searches and the continuation-only low-cache filter.
+
 The app can connect to an external service or own a separate installation.
 Managed versions are installed atomically under Electron's user-data directory,
 and run through the published CLI under bundled stock Node (avoiding Electron's
