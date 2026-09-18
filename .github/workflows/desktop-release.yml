@@ -22,8 +22,8 @@ concurrency:
 
 jobs:
   mac:
-    # Signing credentials are used only on the protected release branch.
-    if: github.ref == 'refs/heads/main'
+    # A maintainer may explicitly rehearse a candidate; only main may publish.
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && !inputs.publish)
     runs-on: macos-15
     timeout-minutes: 45
     permissions:

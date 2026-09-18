@@ -25,7 +25,11 @@ Missing credentials, signing or notarization failures stop publication. Existing
 release assets are not silently overwritten. npm and Docker publish independently;
 check all release jobs before announcing a release as complete.
 
-For a signing rehearsal, manually run **Desktop release** on `main` with
+Before merge, manually run **Release Please** on the candidate branch with
+**desktop_rehearsal** checked and **publish_only** unchecked. This creates signed
+Actions artifacts without opening a release PR or publishing packages.
+
+After merge, manually run **Desktop release** on `main` with
 **publish** unchecked. The verified downloads are retained as Actions artifacts
 without changing a public release. Publishing requires the current commit to be
 the existing release tag’s exact target.
@@ -41,8 +45,8 @@ the existing release tag’s exact target.
 | `APPLE_API_ISSUER` | App Store Connect issuer ID |
 
 The workflow writes the notarization key to a permission-restricted temporary file
-and removes it even if packaging fails. Signing runs only from `main`, never from
-pull requests. Keep these credentials out of source control and workflow logs.
+and removes it even if packaging fails. Publication runs only from `main`. A maintainer can explicitly run a
+non-publishing candidate rehearsal; pull requests never receive signing credentials. Keep these credentials out of source control and workflow logs.
 
 ## User updates
 
