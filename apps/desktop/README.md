@@ -3,7 +3,16 @@
 An optional Electron app for local Meridian installations. The first platform
 is macOS, with native Liquid Glass through
 [electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass)
-on supported Macs. Linux and Windows integration remains unverified.
+on supported Macs. The distribution target is macOS Apple Silicon. Linux and Windows desktop apps
+are planned; their runtime integration remains unverified.
+
+## Downloads and updates
+
+The first public desktop download is being prepared. The release workflow builds
+signed, notarized DMG and ZIP files for [GitHub Releases](https://github.com/rynfar/meridian/releases).
+See the [release guide](../../docs/desktop-releases.md) for publication status and
+CI setup. The **Versions** page updates the managed Meridian service; updating
+the desktop app itself currently requires downloading a newer app.
 
 ## Run locally
 
