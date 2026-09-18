@@ -4864,11 +4864,38 @@ between restarting the original supervisor and clearing its journal. The actual
 launchd processes and registry packages are used; no model calls occur in this
 gate. September 18 results passed all stages. Existing services are untouched.
 
-The first multi-turn version-switch probe failed because its “previous message”
-prompt was ambiguous after more than two turns. A separate bare-marker prompt
+The first multi-turn version-switch probe failed with “The previous message
+does not contain a marker.” Its “previous message” prompt was ambiguous after
+more than two turns. A separate bare-marker prompt
 received a model refusal. Both failures were retained. The fixture prompt now
 explicitly describes the software continuity test and asks for the original
 fixture identifier. A fresh sequence passed on 1.71.0 and then 1.71.1 after a
 UI version switch; the returned identifier was checked exactly on both turns.
 The actual desktop Plugins page also installed OpenClaw 0.1.0 and showed all
 four plugins active.
+
+## Windows session garbage collection (#895 / #896)
+
+```powershell
+# Use the direct Claude Max endpoint for this test process if the shell normally
+# routes ANTHROPIC_BASE_URL to another local proxy. No persistent setting changes.
+Remove-Item Env:ANTHROPIC_BASE_URL -ErrorAction SilentlyContinue
+bun scripts/e2e-windows-session-gc.mjs
+
+# Also drive the actual installed Pi client through an isolated Meridian proxy.
+$env:PI_CLI_PATH = Join-Path $env:APPDATA 'npm\node_modules\@mariozechner\pi-coding-agent\dist\cli.js'
+bun scripts/e2e-windows-session-gc.mjs
+```
+
+Requires native Windows Bun, Node, Claude Max authentication, and Pi for the
+second command. `E2E_MODEL` overrides the default `claude-haiku-4-5`. The gate
+creates a real transcript in a disposable project, proves a pin preserves its
+exact SDK-visible history, retires it, and requires the production fenced SDK
+child to delete it. It checks absence through supported SDK APIs, without
+reading private transcript files. Pi configuration and Meridian state are
+isolated; the test uses the normal PATH, including Volta if installed.
+
+The unit counterpart is `session-lifecycle-windows-gc.test.ts`. In addition to
+backlog progress and timeout/recovery behavior, it checks that a multiline
+script runs in the exact process identified by the child's PID. A version
+manager's wrapper PID is insufficient for deletion fencing.
