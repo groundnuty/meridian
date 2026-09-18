@@ -4795,6 +4795,7 @@ Build and package using `apps/desktop/README.md`. In the actual Mac app:
 3. Close the window and verify the owned listener stays alive in the menu bar.
    Quit the app and verify only its owned listener drains/stops.
 4. Left-click the menu-bar icon: inspect cache metrics, account limits and errors;
+   verify two accounts and their switch controls fit without scrolling, then
    switch accounts and verify the active profile changes. Verify Escape and
    clicking outside dismiss the panel, and right-click opens the fallback menu.
    Verify managed Start/Restart/Stop and external-service controls separately.

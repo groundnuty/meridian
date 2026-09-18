@@ -217,3 +217,8 @@ Account switching and owned service controls remain available without opening th
 dashboard. It uses system typography, canonical light/dark tokens, blue active
 accounts and violet cache metrics. Escape or loss of focus dismisses the panel;
 missing or stale quota data never looks like unused capacity.
+
+Menu-bar accounts use compact rows with side-by-side quota bars, so multiple
+accounts and their switch controls remain visible together. The active account
+shows its next reset; each limit retains full reset detail in its tooltip and
+accessible name. Account lists scroll only when they exceed the available space.
