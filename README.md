@@ -32,10 +32,10 @@ service manager all remain valid ways to run it.
 ## Meet Meridian Desktop
 
 <p align="center">
-  <img src="assets/desktop-demo.gif" alt="Meridian Desktop: service controls, version switching and the installed plugin catalog." width="1000" />
+  <img src="assets/desktop-dashboard.jpg" alt="Meridian Desktop overview showing usage limits, cache activity and recent requests. Sample data." width="1000" />
 </p>
 
-<p align="center"><sub>Real macOS preview · Service, Versions and Plugins</sub></p>
+<p align="center"><sub>macOS dashboard preview · Sample data</sub></p>
 
 | See what matters | Keep it under control |
 | --- | --- |
