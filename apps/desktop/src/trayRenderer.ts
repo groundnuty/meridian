@@ -24,7 +24,8 @@ function render(state: DesktopState) {
   const populated = (number(summary.totalRequests) ?? 0) > 0
   const latency = number(object(summary.ttfb).p50)
   const status = state.running ? health.status === 'healthy' ? 'Connected' : 'Needs attention' : state.preferences.mode === 'managed' ? 'Stopped' : 'Disconnected'
-  const issue = state.error || (!state.running && state.preferences.mode === 'attached' ? 'Cannot reach the external service.' : state.dataErrors.length ? 'Some live data is unavailable.' : '')
+  const stopped = !state.running && state.preferences.mode === 'managed' && !state.busy
+  const issue = state.error || (stopped ? '' : !state.running && state.preferences.mode === 'attached' ? 'Cannot reach the external service.' : state.dataErrors.length ? 'Some live data is unavailable.' : '')
   const html = `<header><div><strong>Meridian</strong><small><span class="dot ${state.running ? health.status === 'healthy' ? 'good' : 'warn' : ''}"></span>${status} · ${state.owned || state.preferences.mode === 'managed' ? 'App managed' : 'External'}</small></div>${button('open-desktop', 'Open dashboard')}</header>
     <section class="metrics" aria-label="Telemetry summary"><div class="hero"><small>Cache reuse</small><strong>${populated ? pct(tokens.avgCacheHitRate) : '—'}</strong></div><div><small>Requests</small><strong>${number(summary.totalRequests)?.toLocaleString() ?? '—'}</strong></div><div><small>First token</small><strong>${populated && latency !== undefined ? `${(latency / 1000).toFixed(1)}s` : '—'}</strong></div></section>
     <small>${number(summary.windowMs) ? `Last ${Math.round(Number(summary.windowMs) / 60000)} minutes` : 'Current telemetry window'} · ${number(summary.errorCount) ?? '—'} errors</small>
@@ -38,9 +39,9 @@ function render(state: DesktopState) {
         const fresh = reset !== undefined && reset > Date.now()
         return `<div class="quota"><div class="line"><span>${esc(text(window.type).replaceAll('_', ' '))}</span><strong>${fresh ? pct(utilization) : '—'} used</strong></div>${fresh && utilization !== undefined ? `<progress max="1" value="${Math.max(0, Math.min(1, utilization))}" class="${utilization >= .95 ? 'danger' : ''}" aria-label="${esc(id)} ${esc(window.type)} usage"></progress>` : ''}<small>${fresh ? `Resets ${esc(new Date(reset).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}))}` : 'Awaiting usage update'}</small></div>`
       }).join('') || '<p>No usage windows available</p>'}</article>`
-    }).join('') || '<p>No accounts available. Open the dashboard to connect.</p>'}</div>
+    }).join('') || (stopped ? '<p>Start Meridian to load accounts and usage.</p>' : '<p>No accounts available. Open the dashboard to connect.</p>')}</div>
     <div class="controls">${state.owned ? button('restart', 'Restart') + button('stop', 'Stop') : state.preferences.mode === 'managed' ? button('start', 'Start Meridian', '', !state.preferences.selected) : '<small>Service managed externally</small>'}</div>
-    <footer>${button('toggle-snooze', state.preferences.quietUntil > Date.now() ? 'Resume alerts' : 'Pause alerts 1h', '', !state.preferences.notifications)}${button('refresh', 'Refresh')}${button('quit-app', 'Quit')}</footer><small>${state.busy ? esc(state.busy) : state.lastChecked ? `Updated ${esc(new Date(state.lastChecked).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}))}` : 'Connecting…'}</small>`
+    <footer>${button('toggle-snooze', state.preferences.quietUntil > Date.now() ? 'Resume alerts' : 'Pause alerts 1h', '', !state.preferences.notifications)}${button('refresh', 'Refresh')}${button('quit-app', 'Quit')}</footer><small>${state.busy ? esc(state.busy) : state.lastChecked ? `Updated ${esc(new Date(state.lastChecked).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}))}` : stopped ? 'Service stopped' : 'Awaiting connection'}</small>`
   if (html === rendered) return
   rendered = html; root.innerHTML = html
   const list = root.querySelector('.accounts'); if (list) list.scrollTop = scroll

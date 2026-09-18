@@ -4953,3 +4953,8 @@ recovery attempts and delivered exactly one critical notification; a separate
 manager test clears incident history and reopens the manager without resetting
 cooldowns. Native tray-click positioning on multiple displays and Windows/Linux
 runtime behavior still need platform-specific verification.
+
+The refined panel was rechecked in the signed Mac package: active account first,
+colored usage bars, content-sized stopped state, restart, persisted snooze after
+relaunch, Resume alerts and Escape dismissal all worked. Disabling dashboard at
+launch left no visible app window; explicit Finder activation reopened it.
