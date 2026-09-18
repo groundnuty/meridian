@@ -369,3 +369,11 @@ restored supervisor after an interrupted return. The curated plugin installer
 uses versioned npm directories and atomic shared-configuration replacement; it
 never installs into an externally managed service. See [the desktop README](apps/desktop/README.md) for
 implemented scope and remaining live verification.
+
+The menu-bar panel has its own sandboxed renderer and native glass window. IPC
+accepts only the exact main frame and local entry URL of either desktop window.
+Both render the same manager snapshot and use the same lifecycle/profile actions.
+`notifications.ts` separates desktop delivery policy from incident collection;
+category preferences, burst thresholds and persisted cooldown timestamps prevent
+per-request alerts. Recovery exhaustion is critical; individual child exits remain
+in the in-app history.

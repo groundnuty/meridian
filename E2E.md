@@ -4794,7 +4794,13 @@ Build and package using `apps/desktop/README.md`. In the actual Mac app:
    separate port, start, restart, switch versions, and roll back.
 3. Close the window and verify the owned listener stays alive in the menu bar.
    Quit the app and verify only its owned listener drains/stops.
-4. Verify a new request failure produces an in-app incident. Separately verify
+4. Left-click the menu-bar icon: inspect cache metrics, account limits and errors;
+   switch accounts and verify the active profile changes. Verify Escape and
+   clicking outside dismiss the panel, and right-click opens the fallback menu.
+   Verify managed Start/Restart/Stop and external-service controls separately.
+5. Disable Open dashboard at launch, relaunch and verify menu-bar operation.
+   Exercise category preferences and notification snooze/resume across restart.
+6. Verify a new request failure produces an in-app incident. Separately verify
    opt-in native notification delivery, profile sign-in completion and feature
    mutations before release.
 
@@ -4930,3 +4936,20 @@ or deferred work. This is macOS evidence, not a replacement for Windows evidence
 The desktop catalog refreshes installed package manifests when the service
 changes, including while stopped. A direct manager test checks that switching
 to an external service clears the previous local installation's version state.
+
+### Menu-bar controls and notification policy (2026-09-18)
+
+On macOS, the signed packaged app's native View → Quick controls command opened
+its Liquid Glass panel. Starting Meridian 1.71.1 on port 3489, switching from
+`personal` to the signed-in `work` profile, and restarting all updated the panel
+correctly; the account switch changed degraded health to healthy. The Settings
+page saved dashboard-at-launch and critical-only notification preferences.
+Explicit Send test reported **Delivered to the system**, and Pause changed to
+Resume alerts. No paid model call was needed for these desktop-only changes.
+
+Pure policy checks cover opt-in categories, quota thresholds, request bursts,
+snooze and persisted cooldowns. A real Node child-process test exhausted three
+recovery attempts and delivered exactly one critical notification; a separate
+manager test clears incident history and reopens the manager without resetting
+cooldowns. Native tray-click positioning on multiple displays and Windows/Linux
+runtime behavior still need platform-specific verification.

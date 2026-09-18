@@ -19,8 +19,8 @@ export function port(value: unknown): number {
   if (!Number.isInteger(value) || typeof value !== 'number' || value < 1024 || value > 65535) throw new Error('Port must be an integer between 1024 and 65535.')
   return value
 }
-export interface Preferences { mode: 'managed' | 'attached'; endpoint: string; port: number; selected?: string; previous?: string; autoStart: boolean; notifications: boolean; quietUntil: number; apiKey?: string }
-export const defaults: Preferences = { mode: 'managed', endpoint: 'http://127.0.0.1:3456', port: 3456, autoStart: false, notifications: false, quietUntil: 0 }
+export interface Preferences { mode: 'managed' | 'attached'; endpoint: string; port: number; selected?: string; previous?: string; autoStart: boolean; notifications: boolean; notificationCritical: boolean; notificationRequests: boolean; notificationCache: boolean; notificationQuota: boolean; openWindowAtLaunch: boolean; quietUntil: number; apiKey?: string }
+export const defaults: Preferences = { mode: 'managed', endpoint: 'http://127.0.0.1:3456', port: 3456, autoStart: false, notifications: false, notificationCritical: true, notificationRequests: false, notificationCache: false, notificationQuota: false, openWindowAtLaunch: true, quietUntil: 0 }
 export interface Incident { id: string; title: string; detail: string; timestamp: number; requestId?: string; severity: 'warning' | 'error' }
 export class IncidentDetector {
   private seen = new Set<string>()
@@ -48,7 +48,8 @@ export class IncidentDetector {
         const used = number(window.utilization); const reset = number(window.resetsAt)
         if (used === undefined || !reset || reset <= now) continue
         const key = `${text(profile.id)}:${text(window.type)}:${reset}`
-        const threshold = used >= .95 ? 95 : used >= .8 ? 80 : 0
+        const threshold = used >= 1 ? 100 : used >= .95 ? 95 : used >= .8 ? 80 : 0
+        if (!this.windows.has(key)) { this.windows.set(key, threshold); continue }
         if (threshold > (this.windows.get(key) ?? 0)) {
           this.windows.set(key, threshold)
           result.push({ id: `quota:${key}:${threshold}`, title: 'Usage threshold reached', detail: `${text(profile.id)} · ${text(window.type).replaceAll('_', ' ')} · ${Math.round(used * 100)}% used`, timestamp: now, severity: 'warning' })

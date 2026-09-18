@@ -24,7 +24,7 @@ describe('desktop incident observation', () => {
     const quota = (used:number, fetchedAt=100000, error?:string) => ({ profiles:[{id:'work', fetchedAt, error, windows:[{type:'five_hour',utilization:used,resetsAt:200000}]}] })
     expect(detector.collect([], quota(.96,1),100000)).toEqual([])
     expect(detector.collect([], quota(.96,100000,'no_token'),100000)).toEqual([])
-    expect(detector.collect([], quota(.81),100000)).toHaveLength(1)
+    expect(detector.collect([], quota(.81),100000)).toEqual([])
     expect(detector.collect([], quota(.82),100001)).toEqual([])
     expect(detector.collect([], quota(.96),100002)).toHaveLength(1)
   })

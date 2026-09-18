@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createServer } from 'node:net'
+import type { Incident } from '../../apps/desktop/src/core'
 import { Manager } from '../../apps/desktop/src/manager'
 
 const fixtures: { manager: Manager; directory: string }[] = []
@@ -51,6 +52,26 @@ async function installed(directory: string, release: string, broken = false) {
   `)
 }
 describe('desktop manager real child lifecycle', () => {
+  test('notification preferences and cooldown survive clearing history and reopening', async () => {
+    const { manager, directory } = await fixture()
+    const delivered: Incident[] = []
+    manager.options.notify = incident => delivered.push(incident)
+    await manager.configure({ notifications: true, notificationCache: true, openWindowAtLaunch: false })
+    manager.addIncident({ id: 'cache:first', title: 'Cache', detail: 'private detail', timestamp: Date.now(), severity: 'warning' })
+    expect(delivered).toHaveLength(1)
+    await manager.acknowledge()
+    await manager.shutdown()
+    const reopened = new Manager({ ...manager.options })
+    const cleanup = fixtures.find(item => item.manager === manager)
+    if (cleanup) cleanup.manager = reopened
+    await reopened.init()
+    expect(reopened.preferences.openWindowAtLaunch).toBe(false)
+    expect(reopened.preferences.notificationCache).toBe(true)
+    reopened.addIncident({ id: 'cache:second', title: 'Cache', detail: 'private detail', timestamp: Date.now(), severity: 'warning' })
+    expect(delivered).toHaveLength(1)
+    expect(reopened.state.incidents).toHaveLength(1)
+  })
+
   test('plugin inventory follows the selected installation even while stopped', async () => {
     const { manager, directory } = await fixture()
     const plugin = join(directory, 'plugin')
@@ -103,6 +124,21 @@ describe('desktop manager real child lifecycle', () => {
     expect((manager.state.health as { pid: number }).pid).not.toBe(firstPid)
     expect(manager.state.incidents.some(incident => incident.title === 'Meridian stopped unexpectedly')).toBe(true)
   }, 20000)
+  test('only exhausted recovery notifies when a real child cannot restart', async () => {
+    const { manager, directory } = await fixture()
+    const delivered: Incident[] = []
+    manager.options.notify = incident => delivered.push(incident)
+    await manager.configure({ notifications: true })
+    await installed(directory, '1.0.0'); await manager.inventory(); await manager.activate('1.0.0'); await manager.start()
+    await installed(directory, '1.0.0', true)
+    await fetch(manager.baseUrl() + '/crash').catch(() => undefined)
+    const deadline = Date.now() + 28_000
+    while (Date.now() < deadline && !delivered.length) await new Promise(resolve => setTimeout(resolve, 100))
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]?.id.startsWith('service:')).toBe(true)
+    expect(manager.state.error).toContain('three attempts')
+    expect(manager.snapshot().owned).toBe(false)
+  }, 30_000)
   test('an occupied port is never adopted or stopped by managed startup', async () => {
     const { manager, directory } = await fixture()
     await installed(directory, '1.0.0'); await manager.inventory(); await manager.activate('1.0.0')

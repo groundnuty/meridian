@@ -97,9 +97,17 @@ packages into those environments.
   continuations. Open a request for timing, token counts and session identifiers.
 - Separate searchable views for alerts, diagnostic events and managed
   process/installer output.
-- Opt-in notifications for newly observed failures, repeated low-cache
-  continuations, and fresh quota crossings at 80% and 95%. Existing history is
-  seeded without replaying a notification storm on launch.
+- Menu-bar glass panel with service health, cache reuse, request count, first-token
+  latency, account switching, quota windows and managed service controls. Right-click
+  retains a native fallback menu. Disable **Open dashboard at launch** for menu-bar use.
+- Desktop notifications are off by default. Enabling them selects failed automatic
+  service recovery only (at most once per 15 minutes). Request failure bursts
+  (three within two minutes), repeated cache misses and usage at 95% are separate
+  opt-ins, limited to once per category per 30 minutes and one advisory per five
+  minutes overall. Cooldowns persist across restarts. Pause notifications for one
+  hour in Settings or the panel; paused alerts are not replayed. In-app history
+  remains available regardless of notification settings. Initial request and quota
+  history seeds silently; raw error details never appear in desktop notifications.
 - Profile sign-in through the selected managed CLI, account switching, plugin
   reload, and client feature toggles.
 - Export an operational summary with aggregate timings and counts, excluding

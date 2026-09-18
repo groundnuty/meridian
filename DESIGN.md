@@ -206,8 +206,14 @@ navigation instead of the web `profileBar` header. Its system light/dark tokens
 live alongside `themeCss` in `desktopThemeCss` in `profileBar.ts`; this explicit
 native-shell exception does not change the shared header contract for web pages.
 The build extracts those tokens into the desktop stylesheet. Native Liquid
-Glass is confined visually to the sidebar, with nearly opaque content surfaces
+Glass appears in the sidebar and compact menu-bar panel, with nearly opaque content surfaces
 for telemetry legibility. Blue remains interactive and violet remains metadata.
 
 The interface labels itself as a preview. Unsupported lifecycle controls are
 not presented as working actions; external service ownership stays visible.
+
+The menu-bar panel prioritizes cache reuse, connection health and account limits.
+Account switching and owned service controls remain available without opening the
+dashboard. It uses system typography, canonical light/dark tokens, blue active
+accounts and violet cache metrics. Escape or loss of focus dismisses the panel;
+missing or stale quota data never looks like unused capacity.

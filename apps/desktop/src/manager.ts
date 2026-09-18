@@ -9,6 +9,7 @@ import { createServer } from 'node:net'
 import { discoverLaunchAgent, suspendAgent, restoreAgent, listeningPid, savedAgent, waitForExit, type LaunchAgent } from './migration'
 import { randomBytes } from 'node:crypto'
 import { defaults, endpoint, object, port, redact, rows, text, version, IncidentDetector, type Preferences, type Incident, incidents, isMeridianHealth } from './core'
+import { NotificationGate } from './notifications'
 import type { DesktopState } from './contracts'
 
 export interface ManagerOptions {
@@ -32,6 +33,7 @@ export class Manager {
   private desiredRunning = false
   private configurationError?: string
   private detector = new IncidentDetector()
+  private notificationGate = new NotificationGate()
   private inheritedEnvironment: Record<string, string> = {}
   private adopted?: LaunchAgent
   private handoff?: { phase: 'prepared' | 'managed' | 'returning'; previous: Preferences; agent: LaunchAgent }
@@ -57,6 +59,7 @@ export class Manager {
       }
     } catch (error) { if (object(error).code !== 'ENOENT') this.state.error = this.configurationError = `Could not load preferences: ${String(error)}. Resolve the saved configuration before managing a service.` }
     try { this.state.incidents = incidents(JSON.parse(await readFile(join(this.options.directory, 'incidents.json'), 'utf8'))) } catch (error) { if (object(error).code !== 'ENOENT') this.log('Could not read incident history.') }
+    try { this.notificationGate = new NotificationGate(JSON.parse(await readFile(join(this.options.directory, 'notification-history.json'), 'utf8'))) } catch (error) { if (object(error).code !== 'ENOENT') this.log('Could not read notification history.') }
     await this.inventory()
     if (this.handoff && this.handoff.phase !== 'managed' && !this.configurationError) {
       try { await this.restoreHandoff() } catch (error) { this.state.error = this.configurationError = `Handoff recovery needs attention: ${String(error)}` }
@@ -78,7 +81,7 @@ export class Manager {
     if (input.mode !== undefined) { if (input.mode !== 'managed' && input.mode !== 'attached') throw new Error('Unknown service mode'); result.mode = input.mode }
     if (input.endpoint !== undefined) result.endpoint = endpoint(input.endpoint)
     if (input.port !== undefined) result.port = port(input.port)
-    for (const key of ['autoStart', 'notifications'] as const) if (typeof input[key] === 'boolean') result[key] = input[key]
+    for (const key of ['autoStart', 'notifications', 'notificationCritical', 'notificationRequests', 'notificationCache', 'notificationQuota', 'openWindowAtLaunch'] as const) if (typeof input[key] === 'boolean') result[key] = input[key]
     if (typeof input.quietUntil === 'number' && Number.isFinite(input.quietUntil)) result.quietUntil = Math.max(0, input.quietUntil)
     if (input.selected) result.selected = version(input.selected)
     if (input.previous) result.previous = version(input.previous)
@@ -165,14 +168,18 @@ export class Manager {
   addIncident(incident: Incident) {
     if (this.state.incidents.some(item => item.id === incident.id)) return
     this.state.incidents = [incident, ...this.state.incidents].slice(0, 200)
+    const notification = this.notificationGate.choose(incident, this.preferences)
     void this.persistIncidents()
-    if (this.preferences.notifications && Date.now() >= this.preferences.quietUntil) this.options.notify(incident)
+    if (notification) this.options.notify(notification)
   }
   private persistIncidents() {
     const content = JSON.stringify(this.state.incidents)
+    const notificationHistory = JSON.stringify(this.notificationGate.snapshot())
     this.incidentWrites = this.incidentWrites.then(async () => {
       const file = join(this.options.directory, 'incidents.json')
       await writeFile(file + '.tmp', content, { mode: 0o600 }); await rename(file + '.tmp', file)
+      const history = join(this.options.directory, 'notification-history.json')
+      await writeFile(history + '.tmp', notificationHistory, { mode: 0o600 }); await rename(history + '.tmp', history)
     }).catch(error => { this.log(`Cannot save incident history: ${String(error)}`) })
     return this.incidentWrites
   }
@@ -406,7 +413,7 @@ export class Manager {
     this.publish()
   }
   private scheduleRecovery() {
-    if (this.restartCount >= 3) { this.state.error = 'Crash recovery paused after three attempts. Inspect service logs before restarting.'; this.publish(); return }
+    if (this.restartCount >= 3) { this.state.error = 'Crash recovery paused after three attempts. Inspect service logs before restarting.'; this.addIncident({ id: `service:${Date.now()}`, title: 'Meridian needs a restart', detail: 'Automatic recovery failed after three attempts. Open Service to inspect the logs and restart.', timestamp: Date.now(), severity: 'error' }); this.publish(); return }
     clearTimeout(this.restartTimer)
     this.restartTimer = setTimeout(() => {
       if (this.stopping || this.closing || !this.desiredRunning) return

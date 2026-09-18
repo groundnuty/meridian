@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, safeStorage, nativeTheme, Tray, nativeImage, Notification, dialog, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, safeStorage, nativeTheme, Tray, nativeImage, Notification, dialog, shell, screen } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Manager } from './manager'
@@ -10,11 +10,23 @@ import type { DesktopState } from './contracts'
 
 app.setName('Meridian Desktop')
 let window: BrowserWindow | undefined
+let panel: BrowserWindow | undefined
 let manager: Manager
 let tray: Tray | undefined
 let quitting = false
 let canQuit = false
-function show() { window?.show(); window?.focus() }
+function show() { panel?.hide(); window?.show(); window?.focus() }
+function togglePanel() {
+  if (!panel || !tray) return
+  if (panel.isVisible()) { panel.hide(); return }
+  const bounds = tray.getBounds()
+  const area = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y }).workArea
+  const width = Math.min(420, area.width), height = Math.min(panel.getBounds().height, area.height)
+  const x = Math.max(area.x, Math.min(bounds.x + bounds.width / 2 - width / 2, area.x + area.width - width))
+  const y = bounds.y < area.y + area.height / 2 ? Math.max(area.y, bounds.y + bounds.height + 6) : Math.max(area.y, bounds.y - height - 6)
+  panel.setBounds({ x: Math.round(x), y: Math.min(y, area.y + area.height - height), width, height })
+  panel.show(); panel.focus(); void manager.refresh()
+}
 async function invoke(action: string, value?: unknown) {
   try { await dispatch(manager, action, value) }
   catch (error) { await dialog.showMessageBox({ type: 'error', message: 'Meridian could not complete that action', detail: String(error) }) }
@@ -36,7 +48,10 @@ function showNotification(title: string, body: string) {
 }
 function updateTray(state: DesktopState) {
   tray?.setToolTip(`Meridian · ${state.running ? state.owned ? 'Managed' : 'Connected' : 'Stopped'}`)
-  tray?.setContextMenu(Menu.buildFromTemplate([
+}
+function trayMenu() {
+  const state = manager.snapshot()
+  return Menu.buildFromTemplate([
     { label: 'Open Meridian', click: show },
     { label: state.running ? `Meridian ${state.running} · ${state.owned ? 'App managed' : 'External'}` : 'Meridian is not running', enabled: false },
     { type: 'separator' },
@@ -44,7 +59,7 @@ function updateTray(state: DesktopState) {
     { label: 'Restart Meridian', enabled: state.owned && !state.busy, click: () => { void invoke('restart') } },
     { label: 'Stop Meridian', enabled: state.owned && !state.busy, click: () => { void invoke('stop') } },
     { type: 'separator' }, { label: 'Quit Meridian Desktop', click: () => app.quit() },
-  ]))
+  ])
 }
 let timer: ReturnType<typeof setInterval> | undefined
 if (!app.requestSingleInstanceLock()) app.quit()
@@ -53,6 +68,8 @@ else {
   void app.whenReady().then(async () => {
     const entry = join(__dirname, 'index.html')
     const entryUrl = pathToFileURL(entry).href
+    const panelEntry = join(__dirname, 'tray.html')
+    const panelUrl = pathToFileURL(panelEntry).href
     manager = new Manager({
       directory: join(app.getPath('userData'), 'preview'),
       node: join(__dirname, '../node_modules/node/bin/node'),
@@ -63,7 +80,7 @@ else {
         return safeStorage.encryptString(value).toString('base64')
       },
       decrypt: value => safeStorage.decryptString(Buffer.from(value, 'base64')),
-      changed: state => { if (window && !window.isDestroyed()) window.webContents.send('meridian:state', state); updateTray(state) },
+      changed: state => { if (window && !window.isDestroyed()) window.webContents.send('meridian:state', state); if (panel && !panel.isDestroyed()) panel.webContents.send('meridian:state', state); updateTray(state) },
       notify: incident => { try { showNotification(incident.title, incident.detail) } catch (error) { manager.log(String(error)) } },
     })
     await manager.init()
@@ -80,13 +97,28 @@ else {
       icon: join(__dirname, 'icon.png'),
       webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true },
     })
+    panel = new BrowserWindow({ width: 420, height: 640, show: false, frame: false, resizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true, alwaysOnTop: true, transparent: Boolean(glass), backgroundColor: glass ? desktopWindowColors.transparent : nativeTheme.shouldUseDarkColors ? desktopWindowColors.dark : desktopWindowColors.light, webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true } })
+    panel.on('blur', () => panel?.hide())
+    panel.on('close', event => { if (!canQuit) { event.preventDefault(); panel?.hide() } })
+    panel.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    panel.webContents.on('will-navigate', event => event.preventDefault())
     const trusted = (event: Electron.IpcMainInvokeEvent) => {
-      if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== entryUrl) throw new Error('Untrusted IPC sender')
+      if (![[window, entryUrl], [panel, panelUrl]].some(([candidate, url]) => candidate instanceof BrowserWindow && !candidate.isDestroyed() && event.sender === candidate.webContents && event.senderFrame === candidate.webContents.mainFrame && event.senderFrame?.url === url)) throw new Error('Untrusted IPC sender')
     }
     ipcMain.handle('meridian:state', event => { trusted(event); return manager.snapshot() })
     ipcMain.handle('meridian:action', async (event, action: unknown, value: unknown) => {
       trusted(event)
-      if (action === 'take-ownership') {
+      if (action === 'open-desktop') show()
+      else if (action === 'close-panel') panel?.hide()
+      else if (action === 'resize-panel') {
+        if (!panel || event.sender !== panel.webContents || typeof value !== 'number' || !Number.isFinite(value)) throw new Error('Invalid panel size.')
+        const bounds = panel.getBounds(), area = screen.getDisplayMatching(bounds).workArea
+        const height = Math.min(area.height, Math.max(320, Math.min(640, Math.ceil(value))))
+        panel.setBounds({ ...bounds, height, y: Math.max(area.y, Math.min(bounds.y, area.y + area.height - height)) })
+      }
+      else if (action === 'quit-app') app.quit()
+      else if (action === 'toggle-snooze') await dispatch(manager, 'save-preferences', { quietUntil: manager.preferences.quietUntil > Date.now() ? 0 : Date.now() + 3_600_000 })
+      else if (action === 'take-ownership') {
         const migration = manager.state.migration
         if (!window || !migration?.canAdopt || value !== migration.label) throw new Error('Refresh the service before taking ownership.')
         const answer = await dialog.showMessageBox(window, { type: 'question', message: 'Manage this service with Meridian Desktop?', detail: `The app will pause ${migration.label} and start Meridian on the same port. Active requests finish first. You can restore the original supervisor from Service.`, buttons: ['Cancel', 'Manage service'], defaultId: 0, cancelId: 0 })
@@ -125,23 +157,25 @@ else {
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: 'Meridian Desktop', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
-      { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] }, { role: 'windowMenu' },
+      { role: 'editMenu' }, { label: 'View', submenu: [{ label: 'Quick controls', accelerator: 'CommandOrControl+Shift+M', click: togglePanel }, { type: 'separator' }, { role: 'reload' }, { role: 'toggleDevTools' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] }, { role: 'windowMenu' },
     ]))
     window.on('close', event => { if (!canQuit) { event.preventDefault(); window?.hide() } })
     tray = new Tray(nativeImage.createFromPath(join(__dirname, 'icon.png')).resize({ width: 18, height: 18 }))
-    tray.on('click', show)
+    tray.on('click', togglePanel)
+    tray.on('right-click', () => tray?.popUpContextMenu(trayMenu()))
     manager.state.loginAtStartup = process.platform === 'darwin' ? app.getLoginItemSettings().openAtLogin : false
     await window.loadFile(entry)
+    await panel.loadFile(panelEntry)
     if (glass) {
       try {
         const id = glass.addView(window.getNativeWindowHandle(), { cornerRadius: 16, opaque: false })
         if (id >= 0) manager.state.glass = 'Native Liquid Glass'
+        glass.addView(panel.getNativeWindowHandle(), { cornerRadius: 18, opaque: false })
       } catch (error) { manager.log(`Glass initialization failed: ${String(error)}`) }
     }
     if (process.platform === 'darwin') window.setWindowButtonVisibility(true)
     manager.publish()
-    window.show()
-    window.focus()
+    if (manager.preferences.openWindowAtLaunch) show()
     void manager.refresh().then(async () => { if (manager.preferences.mode === 'managed' && manager.preferences.autoStart && manager.preferences.selected) await invoke('start') })
     timer = setInterval(() => { if (!quitting && !manager.state.busy) void manager.refresh() }, 10000)
   }).catch(error => { console.error(error); app.quit() })
