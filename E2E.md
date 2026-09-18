@@ -4915,3 +4915,18 @@ The unit counterpart is `session-lifecycle-windows-gc.test.ts`. In addition to
 backlog progress and timeout/recovery behavior, it checks that a multiline
 script runs in the exact process identified by the child's PID. A version
 manager's wrapper PID is insufficient for deletion fencing.
+
+
+2026-09-18 macOS cleanup verification: integrating the Windows GC changes exposed
+an existing POSIX timeout cleanup race. Instrumentation showed that the timeout
+successfully killed the owned process group, then its `finally` block signalled
+the same defunct group again and received `EPERM`, masking the intended timeout
+verdict. Cleanup now joins the successful kill instead of sending it twice.
+Both real-child timeout regressions passed after this change. The live SDK gate
+above also passed on macOS with `claude-haiku-4-5`: its pinned transcript stayed
+unchanged, then fenced retirement deleted exactly one transcript with no failures
+or deferred work. This is macOS evidence, not a replacement for Windows evidence.
+
+The desktop catalog refreshes installed package manifests when the service
+changes, including while stopped. A direct manager test checks that switching
+to an external service clears the previous local installation's version state.
