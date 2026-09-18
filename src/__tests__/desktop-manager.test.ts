@@ -51,6 +51,19 @@ async function installed(directory: string, release: string, broken = false) {
   `)
 }
 describe('desktop manager real child lifecycle', () => {
+  test('plugin inventory follows the selected installation even while stopped', async () => {
+    const { manager, directory } = await fixture()
+    const plugin = join(directory, 'plugin')
+    await mkdir(plugin)
+    await writeFile(join(plugin, 'package.json'), JSON.stringify({ name: '@rynfar/meridian-plugin-opencode-scrub', version: '0.2.0' }))
+    const config = join(directory, 'plugins.json')
+    await writeFile(config, JSON.stringify({ plugins: [{ path: join(plugin, 'index.js'), enabled: true }] }))
+    manager.options.serviceEnvironment = { MERIDIAN_PLUGIN_CONFIG: config }
+    await manager.refresh()
+    expect(manager.state.catalog?.find(item => item.id === 'opencode-scrub')?.installed).toBe('0.2.0')
+    await manager.configure({ mode: 'attached', endpoint: 'http://127.0.0.1:1' })
+    expect(manager.state.catalog?.every(item => item.installed === undefined)).toBe(true)
+  })
   test('starts the CLI, preserves a request during drain, and keeps the selected version after restart', async () => {
     const { manager, directory } = await fixture()
     await installed(directory, '1.0.0'); await manager.inventory(); await manager.activate('1.0.0')

@@ -154,7 +154,13 @@ export class Manager {
       this.state.health = null; this.state.running = undefined; this.state.lastChecked = undefined
       this.state.quota = null; this.state.requests = []; this.state.summary = null; this.state.logs = []; this.state.profiles = null; this.state.plugins = null; this.state.features = null
       this.state.dataErrors = [redact(`Cannot reach ${this.baseUrl()}: ${String(error)}`)]
-    } finally { this.publish() }
+    } finally {
+      try {
+        const configured = this.preferences.mode === 'managed' ? await this.configuredPlugins() : []
+        this.state.catalog = this.state.catalog?.map(plugin => ({ ...plugin, installed: configured.find(item => item.name === plugin.package && item.enabled)?.version }))
+      } catch (error) { this.state.dataErrors.push(redact(`Plugin configuration: ${String(error)}`)) }
+      this.publish()
+    }
   }
   addIncident(incident: Incident) {
     if (this.state.incidents.some(item => item.id === incident.id)) return
