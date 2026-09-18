@@ -12,6 +12,7 @@ await Promise.all([
   copyFile('src/index.html', 'dist/index.html'),
   copyFile('src/style.css', 'dist/style.css'),
   copyFile('../../assets/icon-512.png', 'dist/icon.png'),
+  ...['', '@2x', '@3x'].map(scale => copyFile(`../../assets/trayTemplate${scale}.png`, `dist/trayTemplate${scale}.png`)),
 ])
 const tokens = await readFile('../../src/telemetry/profileBar.ts', 'utf8')
 const theme = tokens.match(/export const desktopThemeCss = `([\s\S]*?)`/)

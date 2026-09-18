@@ -160,7 +160,13 @@ else {
       { role: 'editMenu' }, { label: 'View', submenu: [{ label: 'Quick controls', accelerator: 'CommandOrControl+Shift+M', click: togglePanel }, { type: 'separator' }, { role: 'reload' }, { role: 'toggleDevTools' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] }, { role: 'windowMenu' },
     ]))
     window.on('close', event => { if (!canQuit) { event.preventDefault(); window?.hide() } })
-    tray = new Tray(nativeImage.createFromPath(join(__dirname, 'icon.png')).resize({ width: 18, height: 18 }))
+    // Template artwork has a transparent background; macOS supplies its tint.
+    // Preserve the bundled Retina representations instead of resizing the mask.
+    const trayIcon = process.platform === 'darwin'
+      ? nativeImage.createFromPath(join(__dirname, 'trayTemplate.png'))
+      : nativeImage.createFromPath(join(__dirname, 'icon.png')).resize({ width: 18, height: 18 })
+    if (process.platform === 'darwin') trayIcon.setTemplateImage(true)
+    tray = new Tray(trayIcon)
     tray.on('click', togglePanel)
     tray.on('right-click', () => tray?.popUpContextMenu(trayMenu()))
     manager.state.loginAtStartup = process.platform === 'darwin' ? app.getLoginItemSettings().openAtLogin : false

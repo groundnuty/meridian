@@ -222,3 +222,8 @@ Menu-bar accounts use compact rows with side-by-side quota bars, so multiple
 accounts and their switch controls remain visible together. The active account
 shows its next reset; each limit retains full reset detail in its tooltip and
 accessible name. Account lists scroll only when they exceed the available space.
+
+The macOS menu-bar icon uses a transparent monochrome Meridian template, tinted
+by the system. The Dock retains the full-color app icon. Committed 18-point
+assets include 1x, 2x and 3x representations; regenerate them with
+`swift scripts/render-tray-icon.swift`.
