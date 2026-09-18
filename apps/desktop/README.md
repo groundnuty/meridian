@@ -20,7 +20,8 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run package:mac
 ```
 
 On Apple Silicon, open `release/mac-arm64/Meridian Desktop.app`. Output
-architecture follows the build machine. This is not a signed/notarized release.
+architecture follows the build machine. That command produces an unsigned
+development build; it does not publish a release.
 Desktop dependencies are separate: headless npm, CLI, Docker and Nix users do
 not install Electron or need the app.
 
@@ -120,5 +121,11 @@ LaunchAgent passed takeover, all four registry plugin installations/reloads,
 return to its original supervisor with plugins retained, and recovery of an
 interrupted return. See [`E2E.md`](../../E2E.md#desktop-interface-preview).
 
-Windows and Linux runtime verification remains outstanding. Mac notarization
-and final packaged-app verification are tracked separately from these checks.
+The final arm64 build was signed with Developer ID, accepted by Apple
+notarization, stapled, and accepted by Gatekeeper on September 18. Its actual UI
+confirmed takeover and return of a disposable LaunchAgent; a real Haiku
+conversation continued after returning to headless, and a plugin installed
+through the app remained active. No Meridian release was published.
+
+Windows and Linux runtime verification remains outstanding. This is a macOS
+preview, not a claim of production support on all three platforms.

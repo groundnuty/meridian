@@ -4874,6 +4874,22 @@ UI version switch; the returned identifier was checked exactly on both turns.
 The actual desktop Plugins page also installed OpenClaw 0.1.0 and showed all
 four plugins active.
 
+Final packaged arm64 validation on September 18:
+- Native confirmation transferred a disposable LaunchAgent to app ownership.
+- Plugins installed Hermes 0.1.0 into that service's isolated configuration.
+- Return to headless restored its original supervisor; Hermes remained active.
+- Real Haiku requests returned the same fixture identifier before and after
+  that UI handoff, with the same conversation fixture.
+- OpenCode's installed npm package updated to 0.2.0 through the app. Its plugin
+  metadata still reports 0.1.0; the catalog uses the package manifest for update
+  decisions and installed-version display.
+- Apple accepted notarization submission `4e9453be-9f13-4f96-a779-cb0ccd2746b8`.
+  `codesign --verify --deep --strict`, stapler validation and Gatekeeper execution
+  assessment passed (`source=Notarized Developer ID`).
+
+These results supersede the earlier Mac sign-in, notification and handoff gates.
+Windows/Linux desktop runtime evidence remains absent. No release was published.
+
 ## Windows session garbage collection (#895 / #896)
 
 ```powershell
