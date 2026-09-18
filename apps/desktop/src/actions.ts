@@ -3,11 +3,15 @@ import { object, text } from './core'
 import type { Manager } from './manager'
 export async function dispatch(manager: Manager, action: unknown, value: unknown): Promise<void> {
   if (action === 'login-code') { manager.loginCode(value); return }
-  const labels: Record<string, string> = { refresh: 'Refreshing', 'check-updates': 'Checking releases', install: 'Installing Meridian', activate: 'Switching versions', start: 'Starting Meridian', stop: 'Draining Meridian', restart: 'Restarting Meridian', 'save-preferences': 'Saving settings', 'switch-profile': 'Switching account', 'reload-plugins': 'Reloading plugins', 'set-features': 'Saving features', 'add-profile': 'Adding profile', 'login-profile': 'Signing in', acknowledge: 'Clearing alerts' }
+  const labels: Record<string, string> = { 'take-ownership': 'Taking ownership', 'return-headless': 'Restoring headless service', refresh: 'Refreshing', 'check-plugins': 'Checking plugins', 'install-plugin': 'Installing plugin', 'check-updates': 'Checking releases', install: 'Installing Meridian', activate: 'Switching versions', start: 'Starting Meridian', stop: 'Draining Meridian', restart: 'Restarting Meridian', 'save-preferences': 'Saving settings', 'switch-profile': 'Switching account', 'reload-plugins': 'Reloading plugins', 'set-features': 'Saving features', 'add-profile': 'Adding profile', 'login-profile': 'Signing in', acknowledge: 'Clearing alerts' }
   const name = text(action)
   if (!Object.hasOwn(labels, name)) throw new Error('Unknown desktop action.')
   await manager.mutate(labels[name] ?? 'Working', async () => {
     switch (name) {
+      case 'take-ownership': { const label = text(value); if (!label) throw new Error('Review the supervisor before taking ownership.'); await manager.takeOwnership(label); break }
+      case 'return-headless': await manager.returnHeadless(); break
+      case 'check-plugins': await manager.checkPlugins(); break
+      case 'install-plugin': await manager.installPlugin(value); break
       case 'refresh': await manager.refresh(); break
       case 'check-updates': await manager.checkUpdates(); break
       case 'install': await manager.install(value); break

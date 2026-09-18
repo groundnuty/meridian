@@ -59,11 +59,25 @@ using normal Meridian config and Claude credential locations. It does not copy,
 reset or rewrite those stores. Shell-specific environment overrides are not
 imported automatically when creating a new managed installation.
 
-Automatic takeover of an existing supervisor is **not enabled yet**. The draft
-launchd implementation only considers direct, current-user, loopback CLI jobs
+On macOS, **Service → Manage this service** offers a confirmed handoff for
+compatible LaunchAgents. **Return to headless** restores the original supervisor.
+The handoff only considers direct, current-user, loopback CLI jobs
 with a sufficiently long drain timeout and unchanged plist. Its encrypted
 recovery journal is written before supervisor changes. Wrapper scripts,
 containers, system services and declarative installations stay externally owned.
+
+## Install scrub plugins
+
+In **Plugins**, choose **Check for updates**, then **Install** or **Update** for
+Pi, OpenCode, Hermes or OpenClaw. The app installs the published
+`@rynfar/meridian-plugin-*-scrub` packages, preserves unrelated configuration and
+plugin settings, and reloads its running service. With Meridian stopped, the
+plugins load on the next start.
+
+Plugins use the normal Meridian plugin configuration, so they remain available
+when returning to a local headless installation. External Docker/Nix services
+keep their own filesystem and package management; connecting does not install
+packages into those environments.
 
 ## Monitoring and troubleshooting
 
@@ -99,11 +113,12 @@ refusal, failed-version rollback and crash recovery. The actual unsigned Mac app
 has installed published releases and switched its owned service between 1.71.1
 and 1.71.0 while leaving the external service on 3456 untouched.
 
-The real `claude-haiku-4-5` request reached the SDK but failed because the selected
-account's OAuth session was expired and could not refresh. Successful model
-responses across restart/version switching remain a required gate; see
-[`E2E.md`](../../E2E.md#desktop-interface-preview). Automatic takeover, system
-notification delivery, sign-in completion and other platforms also need live
-verification before release. The native notification test reported
-`UNErrorDomain error 1`, which is displayed in Settings; delivery has not passed.
-This work is not release-ready.
+On September 18, the signed Mac app completed Claude sign-in, displayed real
+usage limits, and delivered its native notification test successfully. Live
+Haiku requests succeeded before and after a UI restart. A disposable real
+LaunchAgent passed takeover, all four registry plugin installations/reloads,
+return to its original supervisor with plugins retained, and recovery of an
+interrupted return. See [`E2E.md`](../../E2E.md#desktop-interface-preview).
+
+Windows and Linux runtime verification remains outstanding. Mac notarization
+and final packaged-app verification are tracked separately from these checks.

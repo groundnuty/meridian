@@ -362,6 +362,10 @@ The tray keeps the app alive when its window closes; explicit quit drains only
 its owned child. Crash recovery is bounded to three attempts.
 
 Docker/Nix/other external supervisors retain ownership when the UI connects.
-The launchd handoff journal is still under verification and its mutations are
-not exposed through IPC. See [the desktop README](apps/desktop/README.md) for
+Compatible macOS LaunchAgents can transfer ownership through a confirmed IPC
+action. An encrypted journal precedes supervisor changes and remains until the
+original supervisor is healthy after return. Recovery recognizes an already
+restored supervisor after an interrupted return. The curated plugin installer
+uses versioned npm directories and atomic shared-configuration replacement; it
+never installs into an externally managed service. See [the desktop README](apps/desktop/README.md) for
 implemented scope and remaining live verification.

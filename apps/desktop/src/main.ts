@@ -25,7 +25,7 @@ function showNotification(title: string, body: string) {
   const notification = new Notification({ title, body })
   notifications.add(notification)
   notification.on('click', show)
-  notification.once('show', () => { manager.state.notificationStatus = 'Delivered to macOS'; manager.publish() })
+  notification.once('show', () => { manager.state.notificationStatus = 'Delivered to the system'; manager.publish() })
   notification.once('close', () => notifications.delete(notification))
   notification.once('failed', (_event, error) => {
     notifications.delete(notification)
@@ -86,7 +86,12 @@ else {
     ipcMain.handle('meridian:state', event => { trusted(event); return manager.snapshot() })
     ipcMain.handle('meridian:action', async (event, action: unknown, value: unknown) => {
       trusted(event)
-      if (action === 'test-notification') {
+      if (action === 'take-ownership') {
+        const migration = manager.state.migration
+        if (!window || !migration?.canAdopt || value !== migration.label) throw new Error('Refresh the service before taking ownership.')
+        const answer = await dialog.showMessageBox(window, { type: 'question', message: 'Manage this service with Meridian Desktop?', detail: `The app will pause ${migration.label} and start Meridian on the same port. Active requests finish first. You can restore the original supervisor from Service.`, buttons: ['Cancel', 'Manage service'], defaultId: 0, cancelId: 0 })
+        if (answer.response === 1) await dispatch(manager, action, value)
+      } else if (action === 'test-notification') {
         showNotification('Meridian notifications are ready', 'This is a test from Meridian Desktop. Your services were not changed.')
       } else if (action === 'login-at-startup') {
         if (process.platform !== 'darwin' || !app.isPackaged) throw new Error('Login startup is available in the packaged Mac app.')

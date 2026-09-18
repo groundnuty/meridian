@@ -1,6 +1,9 @@
+import { createRequire } from 'node:module'
+import { stripVTControlCharacters } from 'node:util'
+import { catalogPlugin, pluginCatalog, registerPlugin } from './pluginCatalog'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, readFile, readdir, rename, rm, writeFile, stat, open } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, isAbsolute, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { createServer } from 'node:net'
 import { discoverLaunchAgent, suspendAgent, restoreAgent, listeningPid, savedAgent, waitForExit, type LaunchAgent } from './migration'
@@ -34,7 +37,7 @@ export class Manager {
   private handoff?: { phase: 'prepared' | 'managed' | 'returning'; previous: Preferences; agent: LaunchAgent }
   private candidate?: LaunchAgent
   constructor(readonly options: ManagerOptions) {
-    this.state = { desktopVersion: options.desktopVersion, platform: process.platform, glass: 'Standard appearance', preferences: defaults, hasApiKey: false, installed: [], available: [], owned: false, health: null, quota: null, requests: [], summary: null, logs: [], profiles: null, plugins: null, features: null, dataErrors: [], incidents: [], serviceLog: [] }
+    this.state = { desktopVersion: options.desktopVersion, platform: process.platform, glass: 'Standard appearance', preferences: defaults, hasApiKey: false, installed: [], available: [], owned: false, health: null, quota: null, requests: [], summary: null, logs: [], profiles: null, plugins: null, catalog: pluginCatalog, features: null, dataErrors: [], incidents: [], serviceLog: [] }
   }
   async init() {
     await mkdir(this.options.directory, { recursive: true, mode: 0o700 })
@@ -146,6 +149,7 @@ export class Manager {
       for (const item of data) { this.state[item.key] = item.value; if (item.error) this.state.dataErrors.push(item.error) }
       for (const incident of this.detector.collect(this.state.requests, this.state.quota)) this.addIncident(incident)
       this.state.lastChecked = Date.now()
+      await this.inspectOwnership()
     } catch (error) {
       this.state.health = null; this.state.running = undefined; this.state.lastChecked = undefined
       this.state.quota = null; this.state.requests = []; this.state.summary = null; this.state.logs = []; this.state.profiles = null; this.state.plugins = null; this.state.features = null
@@ -234,6 +238,76 @@ export class Manager {
       await rename(staging, join(directory, target))
       if (!this.preferences.selected) { this.preferences.selected = target; await this.save() }
       await this.inventory()
+    } finally { await rm(staging, { recursive: true, force: true }) }
+  }
+  private pluginConfigPath() { return this.options.serviceEnvironment?.MERIDIAN_PLUGIN_CONFIG || this.inheritedEnvironment.MERIDIAN_PLUGIN_CONFIG || join(homedir(), '.config/meridian/plugins.json') }
+  private async configuredPlugins() {
+    let source = ''
+    try { source = await readFile(this.pluginConfigPath(), 'utf8') } catch (error) { if (object(error).code !== 'ENOENT') throw error }
+    const found: { path: string; name: string; version: string; enabled: boolean }[] = []
+    for (const item of rows(source ? object(JSON.parse(source)).plugins : [])) {
+      const entry = text(item.path)
+      if (!isAbsolute(entry)) continue
+      let directory = dirname(entry)
+      for (let depth = 0; depth < 8; depth++) {
+        try {
+          const manifest = object(JSON.parse(await readFile(join(directory, 'package.json'), 'utf8')))
+          if (pluginCatalog.some(plugin => plugin.package === manifest.name)) found.push({path:entry, name:text(manifest.name), version:version(manifest.version), enabled:item.enabled !== false})
+          break
+        } catch (error) { if (object(error).code !== 'ENOENT') break }
+        const parent = dirname(directory); if (parent === directory) break; directory = parent
+      }
+    }
+    return found
+  }
+  async checkPlugins() {
+    const configured = this.preferences.mode === 'managed' ? await this.configuredPlugins() : []
+    this.state.catalog = await Promise.all(pluginCatalog.map(async plugin => {
+      const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(plugin.package)}/latest`, { signal: AbortSignal.timeout(15000) })
+      if (!response.ok) throw new Error(`Cannot check ${plugin.title}: HTTP ${response.status}`)
+      return { ...plugin, latest: version(object(await response.json()).version), installed: configured.find(item => item.name === plugin.package && item.enabled)?.version }
+    }))
+    this.publish()
+  }
+  async installPlugin(raw: unknown) {
+    if (this.configurationError) throw new Error(this.configurationError)
+    if (this.preferences.mode !== 'managed') throw new Error('External services manage their own plugin files. Select app management to install locally.')
+    const plugin = catalogPlugin(raw)
+    await this.checkPlugins()
+    const target = version(this.state.catalog?.find(item => item.id === plugin.id)?.latest)
+    const configPath = this.pluginConfigPath()
+    const readConfig = async () => { try { return await readFile(configPath, 'utf8') } catch (error) { if (object(error).code === 'ENOENT') return ''; throw error } }
+    const original = await readConfig()
+    registerPlugin(original, '/validation-only', [])
+    const root = join(dirname(configPath), 'desktop-plugins', plugin.id)
+    const directory = join(root, target)
+    const staging = join(root, `.stage-${randomBytes(6).toString('hex')}`)
+    await mkdir(staging, { recursive: true })
+    try {
+      let installed = false
+      try { const manifest = object(JSON.parse(await readFile(join(directory, 'node_modules', plugin.package, 'package.json'), 'utf8'))); installed = manifest.name === plugin.package && manifest.version === target } catch (error) { if (object(error).code !== 'ENOENT') throw error }
+      if (!installed) {
+        await writeFile(join(staging, 'package.json'), '{"private":true}\n')
+        await writeFile(join(staging, '.npmrc'), 'registry=https://registry.npmjs.org/\n')
+        await writeFile(join(staging, '.global-npmrc'), '')
+        await this.command([this.options.npm, 'install', '--prefix', staging, '--userconfig', join(staging, '.npmrc'), '--globalconfig', join(staging, '.global-npmrc'), '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--save-exact', `${plugin.package}@${target}`], staging)
+        const manifest = object(JSON.parse(await readFile(join(staging, 'node_modules', plugin.package, 'package.json'), 'utf8')))
+        if (manifest.name !== plugin.package || manifest.version !== target) throw new Error('Plugin package did not match the selected release.')
+        await rename(staging, directory)
+      }
+      const entry = createRequire(join(directory, 'package.json')).resolve(plugin.package)
+      await this.command(['--check', entry], directory, 15000)
+      const previousPaths = rows(object(this.state.plugins).plugins).filter(item => item.name === plugin.id).map(item => text(item.path)).filter(Boolean)
+      previousPaths.push(...(await this.configuredPlugins()).filter(item => item.name === plugin.package).map(item => item.path))
+      // Also replace an older desktop installation when the service is stopped.
+      if (original) for (const item of rows(object(JSON.parse(original)).plugins)) if (text(item.path).startsWith(root + sep)) previousPaths.push(text(item.path))
+      const updated = registerPlugin(original, entry, previousPaths)
+      if (await readConfig() !== original) throw new Error('Plugin configuration changed during installation. Retry to preserve the latest settings.')
+      const temporary = configPath + `.desktop-${randomBytes(6).toString('hex')}`
+      try { await writeFile(temporary, updated, { mode: 0o600, flag: 'wx' }); await rename(temporary, configPath) }
+      finally { await rm(temporary, { force: true }) }
+      this.state.catalog = this.state.catalog?.map(item => item.id === plugin.id ? { ...item, installed: target } : item)
+      if (this.child) { await this.api('/plugins/reload', 'POST'); await this.refresh(); const loaded = rows(object(this.state.plugins).plugins).find(item => item.name === plugin.id); if (!loaded || loaded.status !== 'active') throw new Error('Plugin installed, but did not load. Inspect its status and logs.') }
     } finally { await rm(staging, { recursive: true, force: true }) }
   }
   async activate(raw: unknown) {
@@ -367,7 +441,7 @@ export class Manager {
     this.loginChild = child; this.state.login = { output: '' }
     const capture = (chunk: Buffer) => {
       if (!this.state.login) return
-      this.state.login.output = (this.state.login.output + String(chunk)).slice(-12000)
+      this.state.login.output = (this.state.login.output + stripVTControlCharacters(String(chunk))).slice(-12000)
       const match = this.state.login.output.match(/https:\/\/(?:claude\.com|platform\.claude\.com)\/[^\s\u001b]+/)
       if (match) this.state.login.url = match[0]
       this.publish()
@@ -385,15 +459,17 @@ export class Manager {
   }
   async inspectOwnership() {
     if (this.adopted) { this.state.migration = { label: this.adopted.label, canAdopt: false, adopted: true }; return }
+    if (this.preferences.mode !== 'attached' || !this.state.running) { this.state.migration = undefined; return }
     this.candidate = await discoverLaunchAgent(Number(new URL(this.baseUrl()).port) || 80)
     this.state.migration = this.candidate ? { label: this.candidate.label, canAdopt: true, adopted: false } : undefined
   }
-  async takeOwnership() {
+  async takeOwnership(expectedLabel?: string) {
     if (this.configurationError) throw new Error(this.configurationError)
     if (this.child || this.preferences.mode !== 'attached') throw new Error('Connect to the existing instance first.')
     await this.refresh(); await this.inspectOwnership()
     const candidate = this.candidate
     if (!candidate) throw new Error('This supervisor cannot be safely adopted automatically. Keep it connected, or migrate it manually.')
+    if (expectedLabel !== undefined && candidate.label !== expectedLabel) throw new Error('The service supervisor changed. Refresh and review the handoff again.')
     const currentVersion = version(this.state.running)
     const old = { ...this.preferences }
     const servicePort = Number(new URL(this.baseUrl()).port) || 80
@@ -425,11 +501,28 @@ export class Manager {
     const servicePort = Number(new URL(journal.previous.endpoint).port) || 80
     // A child from a crashed desktop may still be draining via its watchdog.
     const current = await listeningPid(servicePort)
-    if (current && current !== journal.agent.pid) {
+    const restoredAgent = current ? await discoverLaunchAgent(servicePort) : undefined
+    const alreadyRestored = restoredAgent?.label === journal.agent.label && restoredAgent.fingerprint === journal.agent.fingerprint
+    if (current && current !== journal.agent.pid && !alreadyRestored) {
       await waitForExit(current)
       if (await listeningPid(servicePort)) throw new Error('The port is occupied. The original supervisor was not restarted.')
     }
     await restoreAgent(journal.agent)
+    // bootstrap returns before the replacement listener is ready. Keep the
+    // recovery journal until the original supervisor owns a healthy service.
+    const deadline = Date.now() + 45000
+    let restored = false
+    while (Date.now() < deadline) {
+      const agent = await discoverLaunchAgent(servicePort)
+      if (agent?.label === journal.agent.label && agent.fingerprint === journal.agent.fingerprint) {
+        try {
+          const response = await fetch(journal.previous.endpoint + '/health', { headers: journal.previous.apiKey ? { 'x-api-key': journal.previous.apiKey } : {}, signal: AbortSignal.timeout(2000) })
+          if (response.ok && isMeridianHealth(await response.json())) { restored = true; break }
+        } catch { /* The restored process may still be initializing HTTP. */ }
+      }
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+    if (!restored) throw new Error('Original supervisor has not become healthy. Recovery information is retained; retry returning to headless.')
     const previous = this.preferences
     const adopted = this.adopted
     const environment = this.inheritedEnvironment

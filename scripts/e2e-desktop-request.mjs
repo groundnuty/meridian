@@ -17,7 +17,7 @@ try { fixture = JSON.parse(await readFile(file, 'utf8')) }
 catch (error) { if (error.code !== 'ENOENT') throw error }
 fixture ??= { session: 'desktop-e2e-' + randomUUID(), marker: 'DESKTOP_' + randomUUID().slice(0, 8), messages: [], versions: [] }
 const health = await (await fetch(new URL('/health', endpoint))).json()
-const user = fixture.messages.length ? 'Repeat the exact marker from my previous message. Output only the marker.' : `Remember this marker: ${fixture.marker}. Reply with only that exact marker.`
+const user = fixture.messages.length ? 'What is the test fixture identifier we established at the start of this software integration test? Reply with just the identifier, without markdown.' : `We are testing conversation continuity in the Meridian desktop application. The identifier for our disposable software test fixture is ${fixture.marker}. Please confirm the fixture identifier by replying with just that identifier, without markdown.`
 const messages = [...fixture.messages, { role: 'user', content: user }]
 const response = await fetch(new URL('/v1/messages', endpoint), {
   method: 'POST', signal: AbortSignal.timeout(180000),

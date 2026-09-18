@@ -4842,3 +4842,33 @@ Diagnostic inspection exposed an older-event slicing bug; the corrected view
 sorts all fetched events newest first, with a direct regression test. These
 read-only UI checks do not resolve the live model, sign-in, notification or
 platform gates above.
+
+
+2026-09-18: signed arm64 app completed the existing profile's Claude sign-in,
+displayed live quota windows, and received Electron's native notification `show`
+event (the earlier unsigned delivery failure did not recur). Real Haiku marker
+requests succeeded before and after a UI restart on Meridian 1.71.1.
+
+The isolated launchd/registry gate is reproducible with:
+
+```sh
+npm run build --prefix apps/desktop
+E2E_DESKTOP_INSTALL="/absolute/path/to/installed/meridian/version" \
+  bun scripts/e2e-desktop-handoff.ts --live
+```
+
+It creates and removes its own LaunchAgent and uses isolated plugin configuration.
+It verifies takeover, installation and live reload of all four published scrub
+plugins, return with all four still active, and recovery after a simulated crash
+between restarting the original supervisor and clearing its journal. The actual
+launchd processes and registry packages are used; no model calls occur in this
+gate. September 18 results passed all stages. Existing services are untouched.
+
+The first multi-turn version-switch probe failed because its “previous message”
+prompt was ambiguous after more than two turns. A separate bare-marker prompt
+received a model refusal. Both failures were retained. The fixture prompt now
+explicitly describes the software continuity test and asks for the original
+fixture identifier. A fresh sequence passed on 1.71.0 and then 1.71.1 after a
+UI version switch; the returned identifier was checked exactly on both turns.
+The actual desktop Plugins page also installed OpenClaw 0.1.0 and showed all
+four plugins active.
