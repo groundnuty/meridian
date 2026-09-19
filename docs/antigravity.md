@@ -5,7 +5,8 @@ endpoint using the CLI's signed-in Google account. No Gemini API key, Python
 SDK, copied OAuth credential, private model endpoint, or API-key fallback is
 used. Claude remains the default backend.
 
-The supported macOS path covers text and client-owned tools. Linux is preview.
+The supported macOS path covers text, supplied images, client-owned tools and
+structured output. Linux is preview.
 The scope is explicit: Antigravity's harness instructions remain in effect,
 `max_tokens` is advisory, and a new ordinary turn replays client history.
 Windows and arbitrary client compatibility are not established.
@@ -44,8 +45,9 @@ When running from a checkout, replace `meridian` with `node dist/cli.js` after
 
 The tool bridge requires explicit `MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1`. It launches
 the CLI with per-process `--dangerously-skip-permissions` and installs a workspace
-hook that denies every tool except the named client tools on Meridian's MCP
-server. This combination is deliberate: the CLI's headless permission layer
+hook that permits named client tools on Meridian's MCP server and exact
+image attachment paths created by Meridian. Structured output also permits the
+native `finish` submission tool; arbitrary filesystem reads remain denied. This combination is deliberate: the CLI's headless permission layer
 denied MCP dispatch in research even when the hook returned `allow`.
 
 The hook has been tested to deny a built-in file read under auto-approval.
@@ -53,7 +55,8 @@ The hook alone is not OS sandboxing or a proof of complete isolation against CLI
 conflicting user customizations. Global CLI customizations still load. Use this
 opt-in only with a trusted local CLI installation and account configuration;
 project-scoped grants without blanket CLI auto-approval remain future work.
-The default text-only mode does not use the auto-approval flag.
+Text/schema-only mode does not use the auto-approval flag. Images require the
+same explicit tool-bridge opt-in, even when the client advertises no tools.
 
 Meridian creates a disposable workspace containing its hook and MCP config.
 It advertises the client's tools through a loopback MCP listener. When the
@@ -118,11 +121,11 @@ allowToolBridge, maxConcurrent, turnTimeoutMs, pendingToolTimeoutMs }` on
 
 ## Supported surface and limits
 
-- `POST /v1/messages` and `/messages`: text, text tool results, JSON and SSE.
+- `POST /v1/messages` and `/messages`: text, base64 image input and tool results,
+  client tools, JSON and SSE.
 - `GET /v1/models`: current account's CLI model slugs.
 - `GET /health`, `/readyz`, `/livez`: backend identity, capability limits and health.
-- Images, numeric thinking budgets, forced tool choice, sampling
-  controls, structured-output contracts, stop sequences, OpenAI routes, Claude
+- Numeric thinking budgets, sampling controls, OpenAI routes, Claude
   profiles, plugins, the full Claude telemetry dashboard and native persistent resume are not
   implemented. Unsupported modeled request features fail before execution.
 - `output_config.effort` accepts `low`, `medium`, or `high` only when it matches
@@ -133,8 +136,8 @@ allowToolBridge, maxConcurrent, turnTimeoutMs, pendingToolTimeoutMs }` on
   can always be selected as separate model slugs.
 - `max_tokens` is included as a prompt instruction; the CLI does not expose a
   native hard output-token cap. Health reports this as `advisory`.
-- CLI permission denial is an error even when the CLI's terminal status says
-  `SUCCESS`. Interrupted or malformed streams never receive a success stop.
+- CLI-reported terminal permission denial is an error even when terminal status
+  says `SUCCESS`. Individual denied tool attempts may be recovered by the CLI. Interrupted or malformed streams never receive a success stop.
 - Usage is accumulated from per-step usage for each HTTP response, avoiding
   double-counting cumulative CLI conversation totals. Cached input is subtracted
   from CLI input before filling Anthropic `input_tokens`, and reported separately
@@ -260,7 +263,7 @@ Pi's `~/.pi/agent/models.json`:
         "id": "gemini-3.8-flash-low",
         "name": "Antigravity Gemini Flash Low",
         "reasoning": false,
-        "input": ["text"],
+        "input": ["text", "image"],
         "contextWindow": 128000,
         "maxTokens": 4096
       }]
@@ -297,7 +300,7 @@ OpenCode's `opencode.json` (merge the provider into existing configuration):
           "temperature": false,
           "reasoning": false,
           "tool_call": true,
-          "modalities": { "input": ["text"], "output": ["text"] }
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
         }
       }
     }
@@ -327,4 +330,60 @@ node scripts/e2e-antigravity-opencode-session.mjs
 They consume subscription quota and retain local fixture artifacts. See
 [E2E.md](../E2E.md#antigravity-coding-tool-acceptance-gate) for verified versions,
 individual outcomes and retained failures. They establish the listed coding
-flows, not image support, every third-party extension, or hard token budgets.
+flows, not every third-party extension or hard token budgets. The additional
+image/schema gates are documented below.
+
+
+## Images, schemas and tool selection
+
+PNG, JPEG, GIF and WebP images use Anthropic base64 `image` blocks, either in a
+user message or inside `tool_result.content`. URL image sources are rejected.
+The existing 8 MiB request limit includes base64 bytes. Meridian validates the
+encoding and media signature, writes the supplied bytes into its private turn
+workspace, and replaces them with attachment references in the CLI prompt.
+Only exact generated attachment paths are allowed through `view_file`; no
+client path or remote URL is fetched by Meridian. Files disappear when the turn
+process exits. The CLI can retain its own conversation records as usual.
+Actual Pi/OpenCode attachment and read-tool flows have been verified with PNGs;
+other accepted formats still depend on the selected model's vision support.
+
+`output_config.format: {"type":"json_schema","schema":{...}}` passes the
+schema unchanged to the official `--json-schema` option through a temporary
+file. Legacy `output_format` accepts the same shape; sending both is rejected.
+Intermediate prose is withheld, while client tool calls still pass through.
+Only the CLI's `structured_output` is returned after local schema validation and
+clean exit. Tool arguments are also validated before client delivery; invalid
+arguments return to the model for correction. Draft 7, 2019-09 and 2020-12
+schemas use request-local validators without coercion or remote reference fetches. A missing result
+fails explicitly. Native model schema restrictions still apply: Gemini rejected
+numeric enum values in live testing. Meridian returns upstream invalid-argument
+errors rather than silently relaxing the schema.
+
+`tool_choice` accepts `auto`, `none`, `any`, or `tool` with an advertised name.
+Forced responses contain a matching tool call or fail explicitly; they never
+succeed with prose instead. The client may change tool choice when returning a
+pending result while preserving the other contract fields. Queued calls excluded
+by a new choice are rejected. `disable_parallel_tool_use` is accepted: the bridge
+already exposes one call per client response. Tools still awaiting a client result
+retain their process until the result, cancellation, or configured deadline;
+this includes terminal client tools that do not send another request.
+
+Up to four nonempty `stop_sequences` of at most 1024 characters are enforced on
+assistant text at Meridian's response boundary. Matching spans streaming chunks,
+the sequence itself is withheld, and the owned process is terminated and joined
+before `stop_reason: "stop_sequence"` succeeds. Stops do not inspect tool arguments
+and cannot be combined with forced tool choice or structured output. Usage after
+an early stop includes only CLI usage observed before termination. This does not
+turn the advisory `max_tokens` field into a native token cap.
+
+```sh
+node scripts/e2e-antigravity-capabilities.mjs
+E2E_SESSION_CAPABILITIES=1 node scripts/e2e-antigravity-opencode-session.mjs
+```
+
+The second gate needs Python Pillow and the macOS Menlo font to generate random
+visual fixtures, then uses actual Pi and OpenCode clients. It also checks
+OpenCode's own structured-output workflow. If using an OpenCode deny-all
+permission policy, explicitly allow its `StructuredOutput` tool when requesting
+that feature; a hidden tool cannot satisfy the client's format requirement. The first gate exercises native
+schema output, forced tool selection/continuation and text stops through JSON/SSE.

@@ -26,6 +26,14 @@ async function main() {
     check('invalid JSON', 'deny')
     check({toolCall:{name:'call_mcp_tool',args:{ServerName:'meridian_client',ToolName:'lookup'}}}, 'allow')
   }
+  if (prompt.includes('IMAGE_PROBE')) {
+    const paths = JSON.parse(readFileSync('attachment-paths.json', 'utf8'))
+    if (paths.length !== 1 || !prompt.includes(paths[0]) || prompt.includes('iVBORw0KGgo')) throw new Error('Image reference missing or bytes leaked')
+    for (const [path, decision] of [[paths[0], 'allow'], ['/etc/passwd', 'deny'], [paths[0] + '/../policy.cjs', 'deny']]) {
+      const result = spawnSync(process.execPath, ['policy.cjs'], { input: JSON.stringify({ toolCall: { name: 'view_file', args: { AbsolutePath: path } } }), encoding: 'utf8' })
+      if (JSON.parse(result.stdout).decision !== decision) throw new Error('Image policy mismatch')
+    }
+  }
   if (prompt.includes('EFFORT_PROBE') && args[args.indexOf('--effort') + 1] !== 'high') throw new Error('Native effort flag missing')
   emit({ event: 'init' })
   if (prompt.includes('RATE_LIMIT')) return emit({event:'result',result:{status:'ERROR',error:'Quota exhausted; retry in 45 seconds'}})
@@ -59,8 +67,14 @@ async function main() {
     emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'UNICODE_OK' } })
     return emit({ event: 'result', result: { status: 'SUCCESS' } })
   }
+  if (prompt.includes('INVALID_TOOL_ARGS')) {
+    let rejected = false
+    try { await rpc('tools/call', { name: tools[0].name, arguments: { key: 7 } }) }
+    catch (error) { if (!String(error).includes('Invalid arguments')) throw error; rejected = true }
+    if (!rejected) throw new Error('Invalid arguments reached the client')
+  }
   let answer = 'READY'
-  if (tools.length) {
+  if (tools.length && !prompt.includes("SKIP_TOOLS")) {
     emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 100, output_tokens: 5 } } })
     const calls = Array.from({ length: prompt.includes('PARALLEL2') ? 2 : 1 }, (_, n) => rpc('tools/call', { name: tools[0].name, arguments: { key: `probe${n}` } }))
     if (prompt.includes('RPC_RETRY')) calls.push(rpc('tools/call', {name:tools[0].name,arguments:{key:'probe0'}},2))
@@ -72,7 +86,9 @@ async function main() {
   }
   emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: answer } })
   emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 120, output_tokens: 10, cache_read_tokens: 20 } } })
-  emit({ event: 'result', result: { status: 'SUCCESS' } })
+  const schemaPath = args.includes('--json-schema') && args[args.indexOf('--json-schema') + 1]
+  if (schemaPath) JSON.parse(readFileSync(schemaPath, 'utf8'))
+  emit({ event: 'result', result: { status: 'SUCCESS', ...(schemaPath && !prompt.includes('MISSING_STRUCTURED') ? { structured_output: prompt.includes('BAD_STRUCTURED') ? { output: { answer } } : { answer } } : {}) } })
   if (prompt.includes('BAD_EXIT')) process.exitCode = 1
   if (prompt.includes('LINGER')) setInterval(() => {}, 1000)
 }

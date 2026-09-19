@@ -1,3 +1,4 @@
+import { AgTextStops } from "./antigravityStops"
 import { providerPageHtml } from '../../telemetry/providerPage'
 import { providerOverview, type ProviderUsage } from '../../telemetry/providerView'
 import { providerSnapshot, disabledProvider } from './providerStatus'
@@ -6,7 +7,7 @@ import type { ProxyConfig, ProxyServer } from "../types"
 import { getBuildInfo } from "../buildInfo"
 import { hasValidApiKey } from "../auth"
 import { AntigravityRuntime, type AntigravityRun } from "./antigravityRuntime"
-import { AntigravityError, blocks, contractKey, historyKey, parseAgRequest, type AgBlock, type AgRequest } from "./antigravityProtocol"
+import { AntigravityError, forcedAgTool, toolChoiceInstruction, blocks, contractKey, historyKey, parseAgRequest, type AgBlock, type AgRequest } from "./antigravityProtocol"
 
 function errorResponse(error: unknown): Response {
   const e = error instanceof AntigravityError ? error : new AntigravityError(error instanceof Error ? error.message : String(error), 503, "api_error")
@@ -48,10 +49,19 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       if (run.delivered?.id !== result.tool_use_id || run.contract !== contractKey(body) || historyKey(run.history) !== historyKey(body.messages.slice(0, suffixStart))) {
         throw new AntigravityError("Pending Antigravity tool continuation changed its history, model, instructions or tools", 409)
       }
-      const followup = suffix.map(message => ({ ...message, content: blocks(message).filter(b => b.type === "text") })).filter(message => message.content.length > 0)
+      const followup = suffix.map(message => ({ ...message, content: blocks(message).filter(b => b.type === "text" || b.type === "image") })).filter(message => message.content.length > 0)
+      if (JSON.stringify(run.request.tool_choice) !== JSON.stringify(body.tool_choice)) {
+        followup.push({ role: "user", content: [{ type: "text", text: toolChoiceInstruction(body) }] })
+      }
+      run.request.tool_choice = body.tool_choice
       run.busy = true
       run.history = body.messages
-      run.accept(result, followup)
+      try { await run.accept(result, followup) }
+      catch (error) {
+        run.busy = false
+        run.abort(error instanceof Error ? error : new Error(String(error)))
+        throw error
+      }
       return run
     }
     const run = await runtime.create(body, signal)
@@ -76,8 +86,18 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       let status = 200
       let failure: string | undefined
       let textOpen = false
-      let reason: "end_turn" | "tool_use" = "end_turn"
+      let reason: "end_turn" | "tool_use" | "stop_sequence" = "end_turn"
+      const stops = new AgTextStops(body.stop_sequences ?? [])
       const base = { id, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage } }
+      function emitText(text: string) {
+        if (!textOpen) {
+          content.push({ type: "text", text: "" }); textOpen = true
+          emit?.("content_block_start", { type: "content_block_start", index: content.length - 1, content_block: { type: "text", text: "" } })
+        }
+        const tail = content.at(-1)
+        if (tail?.type === "text") tail.text += text
+        emit?.("content_block_delta", { type: "content_block_delta", index: content.length - 1, delta: { type: "text_delta", text: text } })
+      }
       emit?.("message_start", { type: "message_start", message: base })
       try {
         while (true) {
@@ -85,17 +105,19 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           if (event.kind === "error") throw event.error
           if (event.kind === "usage") { usage.input_tokens += Math.max(0, event.input - event.cache); usage.output_tokens += event.output; usage.cache_read_input_tokens += event.cache; continue }
           if (event.kind === "text") {
-            if (!textOpen) {
-              content.push({ type: "text", text: "" }); textOpen = true
-              emit?.("content_block_start", { type: "content_block_start", index: content.length - 1, content_block: { type: "text", text: "" } })
-            }
-            const tail = content.at(-1)
-            if (tail?.type === "text") tail.text += event.text
-            emit?.("content_block_delta", { type: "content_block_delta", index: content.length - 1, delta: { type: "text_delta", text: event.text } })
-            continue
+            if (forcedAgTool(body)) continue
+            const text = stops.push(event.text)
+            if (text) emitText(text)
+            if (!stops.matched) continue
+            reason = "stop_sequence"
+            await run.stopAtSequence()
+          } else {
+            const tail = stops.flush()
+            if (tail) emitText(tail)
           }
           if (textOpen) { emit?.("content_block_stop", { type: "content_block_stop", index: content.length - 1 }); textOpen = false }
           if (event.kind === "tool") {
+            if (body.tool_choice?.type === "none" || (body.tool_choice?.type === "tool" && body.tool_choice.name !== event.call.name)) throw new AntigravityError("Antigravity requested a tool excluded by tool_choice", 502, "api_error")
             content.push(event.call)
             const index = content.length - 1
             emit?.("content_block_start", { type: "content_block_start", index, content_block: { ...event.call, input: {} } })
@@ -107,9 +129,10 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           }
           break
         }
-        emit?.("message_delta", { type: "message_delta", delta: { stop_reason: reason, stop_sequence: null }, usage })
+        if (forcedAgTool(body) && reason !== "tool_use") throw new AntigravityError("Antigravity completed without the required tool call", 502, "api_error")
+        emit?.("message_delta", { type: "message_delta", delta: { stop_reason: reason, stop_sequence: stops.matched ?? null }, usage })
         emit?.("message_stop", { type: "message_stop" })
-        return { ...base, content, stop_reason: reason, usage }
+        return { ...base, content, stop_reason: reason, stop_sequence: stops.matched ?? null, usage }
       } catch (error) {
         status = error instanceof AntigravityError ? error.status : 502
         failure = error instanceof Error ? error.message : String(error)
@@ -178,7 +201,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         if (runtime.draining) return Response.json({ status: "draining" }, { status: 503 })
         await runtime.initialize()
         await runtime.verifyAccount()
-        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: false, persistentResume: false, maxTokens: "advisory" }, processes: runtime.runs.size, preparing: runtime.preparing, completed: runtime.completed, failed: runtime.failed })
+        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: false, maxTokens: "advisory" }, processes: runtime.runs.size, preparing: runtime.preparing, completed: runtime.completed, failed: runtime.failed })
       }
       if (request.method === "GET" && path === "/v1/models") {
         const models = await runtime.availableModels()

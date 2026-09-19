@@ -7,8 +7,11 @@ import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
-import { AgEventQueue, AntigravityError, classifyAgFailure, renderAgPrompt, contractKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
+import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, hasAgImages, renderAgPrompt, contractKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 
+import { AgSchemaCompiler, agSchemaError } from "./antigravitySchema"
+import type { ValidateFunction } from "ajv"
+import { AgAttachments } from "./antigravityAttachments"
 import type { AntigravityOptions } from "../types"
 type AgToolReply = AgResult & { clientMessages?: AgMessage[] }
 
@@ -24,7 +27,7 @@ const exec = promisify(execFile)
 const envelope = z.object({
   event: z.string(),
   step_update: z.object({ step_type: z.string().optional(), state: z.string().optional(), text_delta: z.string().optional(), usage: z.object({ input_tokens: z.number().optional(), output_tokens: z.number().optional(), cache_read_tokens: z.number().optional() }).optional() }).optional(),
-  result: z.object({ status: z.string(), error: z.string().optional(), denied_actions: z.array(z.unknown()).optional() }).optional(),
+  result: z.object({ status: z.string(), error: z.string().optional(), denied_actions: z.array(z.unknown()).optional(), structured_output: z.unknown().optional() }).optional(),
 })
 const rpcSchema = z.object({ jsonrpc: z.literal("2.0"), id: z.union([z.string(), z.number()]).optional(), method: z.string(), params: z.record(z.string(), z.unknown()).optional() })
 const toolParams = z.object({ name: z.string(), arguments: z.record(z.string(), z.unknown()).default({}) })
@@ -43,8 +46,12 @@ export class AntigravityRun {
   delivered?: AgCall
   child?: ChildProcessWithoutNullStreams
   private workspace?: string
+  private attachments?: AgAttachments
   private stopped = false
   private terminal = false
+  private structuredText?: string
+  private readonly toolValidators = new Map<string, ValidateFunction>()
+  private readonly outputValidator?: ValidateFunction
   private exited = false
   private cleaning?: Promise<void>
   private timer?: ReturnType<typeof setTimeout>
@@ -57,25 +64,36 @@ export class AntigravityRun {
   constructor(readonly runtime: AntigravityRuntime, readonly request: AgRequest) {
     this.history = request.messages
     this.contract = contractKey(request)
+    const schemas = new AgSchemaCompiler()
+    for (const tool of request.tools) this.toolValidators.set(tool.name, schemas.compile(tool.input_schema, `Tool ${tool.name}`))
+    if (request.output_config?.format) this.outputValidator = schemas.compile(request.output_config.format.schema, "output_config.format.schema")
   }
   async start(): Promise<void> {
     try {
       this.workspace = await realpath(await mkdtemp(join(tmpdir(), "meridian-agy-")))
       await mkdir(join(this.workspace, ".agents"))
-      const tools = this.request.tool_choice?.type === "none" ? [] : this.request.tools
+      const tools = this.request.tools
+      this.attachments = new AgAttachments(this.workspace)
+      const messages = await this.attachments.messages(this.request.messages)
       const hookPath = join(this.workspace, "policy.cjs")
-      // Agent-visible workspace contains no client files. The only allowed action
-      // is the synthetic MCP server dispatch; the host never executes client tools.
-      await writeFile(hookPath, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{try{const p=JSON.parse(input);const t=p.toolCall;const a=t?.args;const allowed=t?.name==='call_mcp_tool'&&a?.ServerName==='meridian_client'&&${JSON.stringify(tools.map(t => t.name))}.includes(a?.ToolName);console.log(JSON.stringify({decision:allowed?'allow':'deny',reason:'Meridian allows only client-owned MCP tools'}));}catch(e){console.log(JSON.stringify({decision:'deny',reason:'Invalid Meridian hook payload'}));}});`)
+      // Workspace contains bridge configuration and supplied attachment bytes only.
+      // Permit client MCP dispatch, exact supplied image reads, or schema submission.
+      await writeFile(hookPath, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{try{const p=JSON.parse(input);const t=p.toolCall;const a=t?.args;const allowed=(t?.name==='call_mcp_tool'&&a?.ServerName==='meridian_client'&&${JSON.stringify(tools.map(t => t.name))}.includes(a?.ToolName))||(t?.name==='finish'&&${Boolean(this.request.output_config?.format)})||(t?.name==='view_file'&&JSON.parse(require('node:fs').readFileSync(${JSON.stringify(join(this.workspace, 'attachment-paths.json'))},'utf8')).includes(a?.AbsolutePath));console.log(JSON.stringify({decision:allowed?'allow':'deny',reason:'Meridian permits client tools, supplied images and requested schema submission only'}));}catch(e){console.log(JSON.stringify({decision:'deny',reason:'Invalid Meridian hook payload'}));}});`)
       await writeFile(join(this.workspace, ".agents/hooks.json"), JSON.stringify({ meridian_policy: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: `${quote(process.execPath)} ${quote(hookPath)}`, timeout: 5 }] }] } }))
       await writeFile(join(this.workspace, ".agents/mcp_config.json"), JSON.stringify({ mcpServers: { meridian_client: { serverUrl: `${this.runtime.mcpUrl}/${this.id}` } } }))
       if (this.stopped) { await this.cleanup(); return }
       const args = ["--new-project", "--add-dir", this.workspace, "--input-format", "stream-json", "--model", this.request.model, "--output-format", "stream-json", "--print-timeout", `${Math.ceil(this.runtime.turnTimeoutMs / 1000)}s`, "--disable-slash-commands", "--sandbox"]
+      if (this.request.output_config?.format) {
+        const schemaPath = join(this.workspace, "output-schema.json")
+        await writeFile(schemaPath, JSON.stringify(this.request.output_config.format.schema))
+        args.push("--json-schema", schemaPath)
+      }
       if (this.request.output_config?.effort) args.push("--effort", this.request.output_config.effort)
-      if (tools.length) args.push("--dangerously-skip-permissions")
+      if (availableAgTools(this.request).length || this.attachments.present) args.push("--dangerously-skip-permissions")
+      if (this.stopped) { await this.cleanup(); return }
       const child = this.child = spawn(this.runtime.executable, args, { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: true })
       child.stdin.on("error", error => this.abort(new AntigravityError(`Antigravity input failed: ${error.message}`, 502, "api_error")))
-      child.stdin.end(JSON.stringify({ event: "user", message: { content: renderAgPrompt(this.request) } }) + "\n")
+      child.stdin.end(JSON.stringify({ event: "user", message: { content: renderAgPrompt({ ...this.request, messages }) } }) + "\n")
       let stderr = "", bytes = 0
       child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-8192) })
       child.stdout.on("data", chunk => {
@@ -89,7 +107,7 @@ export class AntigravityRun {
           if (this.terminal) throw new Error("CLI emitted data after its terminal result")
           const event = envelope.parse(JSON.parse(line))
           const step = event.step_update
-          if (step?.step_type === "agent_response" && step.text_delta) this.queue.push({ kind: "text", text: step.text_delta })
+          if (step?.step_type === "agent_response" && step.text_delta && !this.request.output_config?.format) this.queue.push({ kind: "text", text: step.text_delta })
           if (step?.state === "DONE" && step.usage) this.queue.push({ kind: "usage", input: step.usage.input_tokens ?? 0, output: step.usage.output_tokens ?? 0, cache: step.usage.cache_read_tokens ?? 0 })
           if (event.event === "result" && event.result) {
             this.terminal = true
@@ -97,7 +115,12 @@ export class AntigravityRun {
               this.abort(classifyAgFailure(event.result.error || "Antigravity denied an action; client-owned tool policy or account permission prevented completion"))
             } else if (this.pending.size) this.abort(new AntigravityError("Antigravity ended with unresolved client tools", 502, "api_error"))
             // Success is committed only after a clean process exit, not merely a result line.
-            else this.terminal = true
+            else if (this.request.output_config?.format) {
+              if (!Object.hasOwn(event.result, "structured_output") || event.result.structured_output === undefined) throw new Error("CLI omitted required structured_output")
+              const invalid = this.outputValidator && agSchemaError(this.outputValidator, event.result.structured_output)
+              if (invalid) throw new Error("CLI structured_output did not satisfy the requested schema: " + invalid)
+              this.structuredText = JSON.stringify(event.result.structured_output)
+            }
           }
         } catch (error) { this.abort(new AntigravityError(`Invalid Antigravity stream: ${String(error)}`, 502, "api_error")) }
       })
@@ -106,7 +129,11 @@ export class AntigravityRun {
         this.exited = true
         if (this.terminal && !this.stopped) {
           if (code !== 0 || signal) this.abort(classifyAgFailure("Antigravity exited unsuccessfully after its result"))
-          else { this.runtime.completed++; this.queue.push({ kind: "end" }) }
+          else {
+            this.runtime.completed++
+            if (this.structuredText !== undefined) this.queue.push({ kind: "text", text: this.structuredText })
+            this.queue.push({ kind: "end" })
+          }
         }
         if (!this.terminal && !this.stopped) this.abort(classifyAgFailure(`Antigravity exited without a result${stderr ? ": " + stderr.slice(-1000) : ""}`))
         void this.cleanup()
@@ -134,6 +161,10 @@ export class AntigravityRun {
   }
   async call(name: string, input: Record<string, unknown>): Promise<AgToolReply> {
     if (this.stopped || this.terminal) throw new Error("Turn is closed")
+    const validate = this.toolValidators.get(name)
+    if (!validate) throw new Error("Unknown client tool")
+    const invalid = agSchemaError(validate, input)
+    if (invalid) throw new Error(`Invalid arguments for ${name}; correct them to match the supplied schema: ${invalid}`)
     if (this.pending.size >= 32) throw new Error("Too many outstanding tools")
     const call: AgCall = { type: "tool_use", id: "toolu_agy_" + randomUUID().replaceAll("-", ""), name, input }
     return new Promise((resolve, reject) => {
@@ -147,19 +178,27 @@ export class AntigravityRun {
     this.pendingTimer = setTimeout(() => this.abort(new AntigravityError("Client tool result deadline expired; start a fresh turn", 409, "invalid_request_error")), this.runtime.pendingToolTimeoutMs)
     this.pendingTimer.unref()
   }
-  accept(result: AgResult, clientMessages: AgMessage[] = []): void {
+  async accept(result: AgResult, clientMessages: AgMessage[] = []): Promise<void> {
+    if ((hasAgImages([{ role: "user", content: [result] }, ...clientMessages])) && !this.runtime.options.allowToolBridge) throw new AntigravityError("Images require explicit MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1")
+    const prepared = await this.attachments!.toolResult(result)
+    const messages = await this.attachments!.messages(clientMessages)
     const pending = this.pending.get(result.tool_use_id)
     if (!pending || result.tool_use_id !== this.delivered?.id) throw new AntigravityError("Tool result was not requested by this turn", 409)
     clearTimeout(this.pendingTimer)
     this.pending.delete(result.tool_use_id)
     this.runtime.toolOwners.delete(result.tool_use_id)
     this.delivered = undefined
-    pending.resolve({ ...result, clientMessages })
+    pending.resolve({ ...prepared, clientMessages: messages })
   }
-  abort(error: Error): void {
+  async stopAtSequence(): Promise<void> {
+    this.abort(new AntigravityError("Client stop sequence reached", 499, "api_error"), false)
+    await this.settled
+  }
+  abort(error: Error, failed = true): void {
     if (this.stopped) return
     this.stopped = true
-    this.runtime.failed++
+    if (failed) this.runtime.failed++
+    else if (!this.exited) this.runtime.completed++
     this.queue.fail(error)
     for (const [id, pending] of this.pending) { this.runtime.toolOwners.delete(id); pending.reject(error) }
     this.pending.clear()
@@ -320,7 +359,7 @@ export class AntigravityRuntime {
   }
   async create(request: AgRequest, signal?: AbortSignal): Promise<AntigravityRun> {
     if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
-    if (request.tools.length && request.tool_choice?.type !== "none" && !this.options.allowToolBridge) throw new AntigravityError("Client tools require explicit MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1; see the Antigravity guide")
+    if (((request.tools.length && request.tool_choice?.type !== "none") || hasAgImages(request.messages)) && !this.options.allowToolBridge) throw new AntigravityError("Client tools and images require explicit MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1; see the Antigravity guide")
     if (this.runs.size + this.preparing >= this.maxConcurrent) throw new AntigravityError("Antigravity process capacity is full; pending client tools count toward capacity", 429, "rate_limit_error", 5)
     this.preparing++
     try {
@@ -356,7 +395,7 @@ export class AntigravityRuntime {
       const rpc = rpcSchema.parse(JSON.parse(raw)); rpcId = rpc.id
       if (rpc.id === undefined) { res.writeHead(202); res.end(); return }
       let result: unknown
-      const tools = run.request.tool_choice?.type === "none" ? [] : run.request.tools
+      const tools = availableAgTools(run.request)
       if (rpc.method === "initialize") result = { protocolVersion: rpc.params?.protocolVersion ?? "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "meridian-client-tools", version: "1" } }
       else if (rpc.method === "tools/list") result = { tools: tools.map(t => ({ name: t.name, description: t.description ?? t.name, inputSchema: t.input_schema })) }
       else if (rpc.method === "tools/call") {

@@ -163,13 +163,76 @@ Retained failures and limits:
   effort override. Mismatching/unsupported model suffixes now fail before launch;
   the supported native effort gate uses a matching Gemini high model. Pi should
   select Gemini effort through model slugs, with numeric thinking controls off.
-- Official stream-json CLI input only supports text blocks. Images, native hard
+- Official stream-json CLI input only supports text blocks. The additional gate
+  below verifies images through exact supplied attachment files instead. Native hard
   token/thinking budgets, arbitrary plugins/extensions, native agy resume and
   pending-tool recovery across process death are not established by these gates.
 
 The gates record the actual requests, client logs, versions and per-check report.
 They do not automatically repeat a failed model attempt. Client validation errors
 may be corrected by the model inside the same conversation, as in normal use.
+
+### Antigravity images, schemas and response controls
+
+```sh
+npm run build
+node scripts/e2e-antigravity-capabilities.mjs
+E2E_SESSION_CAPABILITIES=1 node scripts/e2e-antigravity-opencode-session.mjs
+```
+
+The first gate checks native JSON-schema output in JSON and SSE responses,
+text stops in both modes (including process cleanup), forced any/named client
+tools, and a named-tool continuation that finishes with native structured output.
+The second uses actual Pi/OpenCode attachments and each client's image read
+result, then OpenCode's own `StructuredOutput` workflow. Images contain newly
+randomized six-character codes absent from prompts and filenames. The image
+fixture generator needs Python Pillow and macOS Menlo. Configurations and client
+files are isolated, and all model traffic uses the official subscription CLI.
+OpenCode's deny-all fixture policy explicitly permits `read` and
+`StructuredOutput`. `E2E_IMAGE_CLIENT=opencode` or `structured` narrows diagnostic
+runs; `E2E_AGY_TRACE=1` records only fixture model stdin/stdout, never auth probes.
+
+**Verified 2026-09-18:** macOS arm64, Node 22.22.3, agy 1.2.7,
+Gemini 3.8 Flash Low, Pi 0.72.1 and OpenCode 1.18.31. All six response-control
+checks passed in `meridian-agy-capabilities-VXKid6`. All five actual-client checks
+passed in `meridian-agy-opencode-session-c4THXr`, including exact visual codes
+and exact structured object fields. The native schema result is independently
+validated; intermediate native finish metadata is never delivered as JSON.
+
+Retained evidence and corrections:
+
+- `agy-image-probe-539I9h`: native MCP image results were offloaded into a CLI
+  private file, whose read the policy denied. `agy-image-probe-HqyUNq` proved
+  exact reads of supplied workspace images, leading to the attachment bridge.
+  Arbitrary host reads remain denied; other accepted image formats have signature
+  and transport validation, but only PNG vision was live-tested here.
+- `meridian-agy-capabilities-akVsTU`: Gemini rejected a numeric enum in a schema.
+  This native limitation remains an explicit invalid-argument error; the schema
+  is never silently weakened. `voyJLC` exposed a missing structured result while
+  the policy blocked native `finish`; schema requests now permit that operation.
+- `meridian-agy-opencode-session-FYJYKA`: the visual answers were correct, but the
+  test checked only the final assistant message for `read`. The corrected gate
+  checks saved tool history and verifies that the result contains an image.
+- `7iXEGN` timed out because the fixture's deny-all policy hid `StructuredOutput`.
+  Diagnostic trace `oHwzGQ` established the missing tool and blocked private-schema
+  reads. `yTlSGq` exposed a guessed, extra `output` argument wrapper. The fixture
+  now permits the requested tool; Meridian includes exact supplied schemas in its
+  prompt and rejects invalid arguments before delivery so the model can correct
+  them. Final `c4THXr` passed without relaxing its exact-object assertion.
+
+**Regression verification 2026-09-19:** the expanded schema/image boundary also
+passed the full actual Pi coding/session gate (`meridian-agy-pi-27Cpz6`, 11 checks,
+21 requests) and OpenCode coding/session/delegation/high-effort gate
+(`meridian-agy-opencode-lTc0nn`, 9 checks, 18 requests). The actual macOS app
+gate also passed all 9 checks in `meridian-agy-desktop-OOFlYO` (nested client
+artifact `meridian-agy-e2e-vQxLZf`): both live provider routes, Pi exact copy,
+provider/request/tray UI, clean activity with no data errors, standalone mode
+and owned-service shutdown.
+
+Text stops are enforced at the response boundary, including split-chunk prefixes;
+they are not native token caps and early-stop usage can be incomplete. Hard token
+caps, numeric reasoning budgets, sampling controls, arbitrary extensions, native
+agy persistent resume, Linux and Windows are not established by these gates.
 
 ## Quick Start
 

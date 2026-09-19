@@ -3,11 +3,12 @@ import { fileURLToPath } from "node:url"
 import { createAntigravityServer } from "../proxy/backends/antigravity"
 import { AntigravityRuntime } from "../proxy/backends/antigravityRuntime"
 import { DEFAULT_PROXY_CONFIG } from "../proxy/types"
-import { parseAgRequest, historyKey, contractKey } from "../proxy/backends/antigravityProtocol"
+import { parseAgRequest, renderAgPrompt, historyKey, contractKey } from "../proxy/backends/antigravityProtocol"
 
 interface TestReply {
   backend?: string
   stop_reason: string
+  stop_sequence?: string
   content: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>
   usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number }
 }
@@ -31,7 +32,7 @@ describe("Antigravity request contract", () => {
     expect(() => parseAgRequest({ ...initial(), messages: [{ role: "user", content: [{ type: "image", source: {} }] }] })).toThrow("text")
     expect(() => parseAgRequest({ ...initial(), temperature: 0 })).toThrow("temperature")
     expect(() => parseAgRequest({ ...initial(), thinking: { type: "enabled", budget_tokens: 100 } })).toThrow()
-    expect(() => parseAgRequest({ ...initial(), tool_choice: { type: "tool", name: "lookup" } })).toThrow()
+    expect(() => parseAgRequest({ ...initial(), tool_choice: { type: "tool", name: "unknown" } })).toThrow()
   })
   it("supports native effort and binds it to a pending tool contract", () => {
     const base = parseAgRequest({ ...initial(), model: "fixture-model-high", thinking: { type: "adaptive" }, output_config: { effort: "high" } })
@@ -39,7 +40,20 @@ describe("Antigravity request contract", () => {
     expect(base.output_config?.effort).toBe("high")
     expect(contractKey(base)).not.toBe(contractKey({ ...base, output_config: { effort: "low" } }))
     expect(() => parseAgRequest({ ...initial(), output_config: { effort: "max" } })).toThrow()
-    expect(() => parseAgRequest({ ...initial(), output_config: { format: { type: "json_schema", schema: {} } } })).toThrow()
+    expect(parseAgRequest({ ...initial(), output_config: { format: { type: "json_schema", schema: {} } } }).output_config?.format?.type).toBe("json_schema")
+  })
+  it("includes exact client schemas without requiring private CLI metadata reads", () => {
+    const prompt = renderAgPrompt(parseAgRequest({ ...initial(), tool_choice: { type: "tool", name: "lookup" } }))
+    expect(prompt).toContain(JSON.stringify([tool]))
+    const disabled = renderAgPrompt(parseAgRequest({ ...initial(), tool_choice: { type: "none" } }))
+    expect(disabled).not.toContain(JSON.stringify(tool))
+  })
+  it("normalizes legacy structured output without ambiguous precedence", () => {
+    const format = { type: "json_schema" as const, schema: { type: "object" } }
+    const legacy = parseAgRequest({ ...initial(), output_format: format })
+    expect(legacy.output_config?.format).toEqual(format)
+    expect(contractKey(legacy)).toBe(contractKey(parseAgRequest({ ...initial(), output_config: { format } })))
+    expect(() => parseAgRequest({ ...initial(), output_format: format, output_config: { format } })).toThrow("only one")
   })
   it("normalizes string/text messages and JSON key order for continuation", () => {
     expect(historyKey([{ role: "user", content: "hello" }])).toBe(historyKey([{ role: "user", content: [{ type: "text", text: "hello" }] }]))
@@ -62,6 +76,57 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     const { send } = fixture()
     const response = await send({ ...initial("EFFORT_PROBE"), model: "fixture-model-high", tools: [], thinking: { type: "adaptive" }, output_config: { effort: "high" } })
     expect(response.status).toBe(200)
+  })
+  it("materializes only valid supplied image bytes and restricts the read hook", async () => {
+    const { send } = fixture()
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aG1sAAAAASUVORK5CYII=" } }
+    const request = { ...initial(), tools: [], messages: [{ role: "user", content: [{ type: "text", text: "IMAGE_PROBE" }, image] }] }
+    expect((await send(request)).status).toBe(200)
+    expect((await send({ ...request, messages: [{ role: "user", content: [{ ...image, source: { ...image.source, data: "ZmFrZQ==" } }] }] })).status).toBe(400)
+    const disabled = fixture({ allowToolBridge: false })
+    expect((await disabled.send(request)).status).toBe(400)
+  })
+  it("stops text output, terminates the owned process, and reports the exact sequence", async () => {
+    const { send, runtime } = fixture()
+    const response = await send({ ...initial("LINGER"), tools: [], stop_sequences: ["AD"] })
+    expect(response.status).toBe(200)
+    const body = await decode(response)
+    expect(body.content).toEqual([{ type: "text", text: "RE" }])
+    expect(body.stop_reason).toBe("stop_sequence")
+    expect(body.stop_sequence).toBe("AD")
+    expect(runtime.runs.size).toBe(0)
+    expect(runtime.completed).toBe(1)
+    expect(runtime.failed).toBe(0)
+  })
+  it("uses native structured output and never leaks intermediate prose", async () => {
+    const { send } = fixture()
+    const format = { type: "json_schema", schema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } }
+    const response = await send({ ...initial("Hello"), tools: [], output_config: { format } })
+    expect(response.status).toBe(200)
+    expect((await decode(response)).content).toEqual([{ type: "text", text: '{"answer":"READY"}' }])
+    expect((await send({ ...initial("BAD_STRUCTURED"), tools: [], output_config: { format } })).status).toBe(502)
+    expect((await send({ ...initial("MISSING_STRUCTURED"), tools: [], output_config: { format } })).status).toBe(502)
+    expect((await send({ ...initial("BAD_EXIT"), tools: [], output_config: { format } })).status).toBe(502)
+  })
+  it("enforces forced tools, then accepts automatic selection on continuation", async () => {
+    const { send } = fixture()
+    const request = { ...initial(), tools: [{ ...tool, name: "excluded" }, tool], tool_choice: { type: "tool", name: "lookup" } }
+    const first = await decode(await send(request))
+    expect(first.content).toHaveLength(1)
+    const call = first.content[0]!
+    expect(call.name).toBe("lookup")
+    const response = await send({ ...request, tool_choice: { type: "auto" }, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "receipt" }] }] })
+    expect(response.status).toBe(200)
+    expect((await decode(response)).stop_reason).toBe("end_turn")
+    expect((await send({ ...initial("SKIP_TOOLS"), tool_choice: { type: "any" } })).status).toBe(502)
+  })
+  it("rejects invalid tool arguments before delivery and permits a corrected call", async () => {
+    const { send } = fixture()
+    const request = initial("INVALID_TOOL_ARGS")
+    const first = await decode(await send(request))
+    expect(first.content[0]?.input).toEqual({ key: "probe0" })
+    const response = await send({ ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: first.content[0]?.id, content: "corrected" }] }] })
+    expect((await decode(response)).content[0]?.text).toBe("corrected")
   })
   it("holds MCP until the matching HTTP tool result and preserves is_error", async () => {
     const { send, runtime } = fixture()

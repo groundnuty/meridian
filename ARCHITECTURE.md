@@ -14,7 +14,14 @@ backend selector.
 
 `backends/antigravityProtocol.ts` owns pure validation, history identity and
 prompt rendering. `antigravityRuntime.ts` owns the official CLI subprocesses and
-loopback MCP transport. `antigravity.ts` adapts the standard Request/Response
+loopback MCP transport. `antigravityAttachments.ts` materializes only supplied
+base64 image bytes in the disposable workspace; the hook permits exact generated
+paths. `antigravityStops.ts` is a pure incremental text-stop matcher.
+`antigravitySchema.ts` compiles request-local Ajv validators for client tool
+arguments and native structured results. It never fetches remote references or
+coerces client data. Tool definitions travel in the prompt as well as MCP, so
+model calls do not depend on access to private CLI schema files.
+`antigravity.ts` adapts the standard Request/Response
 interface to Anthropic JSON/SSE. Only `server.ts` imports Hono and binds the
 public listener. Backend modules do not import Claude session or cache modules.
 
@@ -25,7 +32,11 @@ The exact pending assistant prefix also permits appended user steering, either
 beside the tool result or in subsequent user messages. New instructions travel
 in a separate MCP result envelope field; they do not become tool output and do
 not start a second process. Client-owned delegation tools follow the same MCP
-path as file tools; built-in Antigravity subagents remain blocked.
+path as file tools; built-in Antigravity subagents remain blocked. Tool choice
+may change between responses without changing the remaining pending contract.
+Native schema mode permits `finish`, withholds prose and emits only the final
+structured result after clean exit. Text stops deliberately terminate and join
+the process; they are separate from native token-budget controls.
 Completed requests have no cached mapping; the next turn replays client
 history. Native Claude transcript lifecycle and lineage persistence cannot be
 applied to Antigravity. `ProxyInstance.close()` joins owned subprocesses;

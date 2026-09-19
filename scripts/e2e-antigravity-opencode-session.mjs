@@ -1,17 +1,19 @@
 // Actual OpenCode session controls against subscription-backed Antigravity.
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, chmod } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
+import { verifyImageClients } from './lib-antigravity-image-checks.mjs'
 import { startProxyServer } from '../dist/server.js'
 
 const root = await mkdtemp(join(tmpdir(), 'meridian-agy-opencode-session-'))
 console.log(`Artifacts: ${root}`)
 const modelID = process.env.E2E_AGY_MODEL || 'gemini-3.8-flash-low'
 const binary = process.env.E2E_OPENCODE_BIN || 'opencode'
+const capabilities = process.env.E2E_SESSION_CAPABILITIES === '1'
 const model = { providerID: 'meridian-agy', modelID }
 const env = { ...process.env }
 for (const key of Object.keys(env)) if (/^(OPENCODE_|MERIDIAN_|CLAUDE_PROXY_|ANTHROPIC_|CLAUDE_|GEMINI_API_KEY|GOOGLE_API_KEY)/.test(key)) delete env[key]
@@ -24,11 +26,26 @@ const report = { cli: cliVersion(), node: process.version, modelID, client: spaw
 let proxy, child, stdout = '', stderr = '', exited = false
 const apiLog = []
 try {
-  proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { allowToolBridge: true, executable: process.env.MERIDIAN_AGY_PATH } })
+  let executable = process.env.MERIDIAN_AGY_PATH
+  if (process.env.E2E_AGY_TRACE === '1') {
+    executable = join(root, 'trace-agy.cjs')
+    await writeFile(executable, `#!/usr/bin/env node
+const {spawn}=require('node:child_process');const fs=require('node:fs');
+const args=process.argv.slice(2);const trace=args.includes('--input-format');
+const child=spawn(${JSON.stringify(process.env.MERIDIAN_AGY_PATH || 'agy')},args,{stdio:['pipe','pipe','pipe']});
+process.stdin.pipe(child.stdin);child.stderr.pipe(process.stderr);
+child.stdin.on('error',e=>process.stderr.write(String(e)));
+child.stdout.on('data',d=>{if(trace)fs.appendFileSync(${JSON.stringify(root)}+'/agy-'+process.pid+'.ndjson',d);process.stdout.write(d)});
+if(trace)process.stdin.on('data',d=>fs.appendFileSync(${JSON.stringify(root)}+'/prompt-'+process.pid+'.json',d));
+child.on('error',e=>{process.stderr.write(String(e));process.exitCode=1});child.on('close',code=>process.exit(code??1));
+`)
+    await chmod(executable, 0o700)
+  }
+  proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { allowToolBridge: true, executable } })
   if (!proxy.server.listening) await once(proxy.server, 'listening')
   const address = proxy.server.address(); assert(address && typeof address !== 'string')
   const proxyUrl = `http://127.0.0.1:${address.port}`
-  await writeFile(join(env.OPENCODE_CONFIG_DIR, 'opencode.json'), JSON.stringify({ model: `meridian-agy/${modelID}`, small_model: `meridian-agy/${modelID}`, enabled_providers: ['meridian-agy'], share: 'disabled', permission: 'deny', provider: { 'meridian-agy': { npm: '@ai-sdk/anthropic', options: { baseURL: proxyUrl + '/v1', apiKey: 'local-fixture' }, models: { [modelID]: { name: modelID, limit: { context: 128000, output: 4096 }, temperature: false, reasoning: false, tool_call: true, modalities: { input: ['text'], output: ['text'] } } } } } }))
+  await writeFile(join(env.OPENCODE_CONFIG_DIR, 'opencode.json'), JSON.stringify({ model: `meridian-agy/${modelID}`, small_model: `meridian-agy/${modelID}`, enabled_providers: ['meridian-agy'], share: 'disabled', permission: capabilities ? { '*': 'deny', read: 'allow', StructuredOutput: 'allow' } : 'deny', provider: { 'meridian-agy': { npm: '@ai-sdk/anthropic', options: { baseURL: proxyUrl + '/v1', apiKey: 'local-fixture' }, models: { [modelID]: { name: modelID, limit: { context: 128000, output: 4096 }, temperature: false, reasoning: false, tool_call: true, modalities: { input: capabilities ? ['text', 'image'] : ['text'], output: ['text'] } } } } } }))
   child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] })
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8')
   child.stdout.on('data', chunk => { stdout += chunk }); child.stderr.on('data', chunk => { stderr += chunk })
@@ -45,6 +62,8 @@ try {
     assert(response.ok, `${path}: ${response.status}: ${text}`)
     return text ? JSON.parse(text) : undefined
   }
+  if (capabilities) await verifyImageClients({ root, api, model, proxyUrl, report })
+  else {
   const session = await api('/session', { title: 'Antigravity session acceptance' })
   const path = `/session/${session.id}`
   async function prompt(text) {
@@ -78,6 +97,7 @@ try {
   while ((await health()).processes) { assert(Date.now() < stoppedBy, 'OpenCode abort leaked a process'); await new Promise(resolve => setTimeout(resolve, 50)) }
   assert((await prompt('Reply exactly OPENCODE_RECOVERED. No tools.')).includes('OPENCODE_RECOVERED'))
   report.passed.push('actual OpenCode cancellation releases process and next prompt succeeds')
+  }
   assert.equal(cliVersion(), report.cli, "CLI version changed during verification")
   console.log(JSON.stringify(report, null, 2))
 } catch (error) { report.error = String(error); throw error }
