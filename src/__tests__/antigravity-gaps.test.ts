@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { rm } from 'node:fs/promises'
+import { rm, readdir } from 'node:fs/promises'
 import { join, resolve, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -21,7 +21,13 @@ afterEach(async () => {
       if (process.platform === 'win32') { await new Promise(resolve => setTimeout(resolve, 50)); Bun.gc(true) }
       try { await rm(root, { recursive: true, force: true }); break }
       catch (error) {
-        if (process.platform !== 'win32' || attempt >= 9 || !(error instanceof Error && 'code' in error && ['EBUSY','EPERM','ENOTEMPTY'].includes(String(error.code)))) throw error
+        if (process.platform !== 'win32' || attempt >= 9 || !(error instanceof Error && 'code' in error && ['EBUSY','EPERM','ENOTEMPTY'].includes(String(error.code)))) {
+          for (const entry of await readdir(root)) {
+            try { await rm(join(root,entry), {recursive:true,force:true}) }
+            catch (itemError) { console.error('Fixture cleanup retained entry:', entry, String(itemError)) }
+          }
+          throw error
+        }
         await new Promise(resolve => setTimeout(resolve, 200))
       }
     }
