@@ -550,6 +550,7 @@ Additional live gates (consume the signed-in subscription):
 
 ```sh
 node scripts/e2e-antigravity-expansion.mjs
+node scripts/e2e-antigravity-openai-tools.mjs
 E2E_PYTHON=/path/to/python-with-reportlab-and-pillow \
 MERIDIAN_AGY_WHISPER_MODEL=/path/to/ggml-base.bin \
 node scripts/e2e-antigravity-media.mjs

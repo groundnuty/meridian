@@ -303,7 +303,7 @@ Gemini 3.8 Flash Low:**
 | Gate | Result and retained artifact directory |
 | --- | --- |
 | `e2e-antigravity-expansion.mjs` | Six checks: same-process random-receipt recall, both OpenAI routes as JSON/SSE, one response with two real client actions and reversed results. `meridian-agy-expansion-u07uzW`. |
-| Additional actual OpenAI tool gate | Both routes return forced function calls, consume correlated random receipts and stream the exact result. `meridian-agy-openai-tools-h0C87G`. |
+| `e2e-antigravity-openai-tools.mjs` | Both routes return forced function calls, consume correlated random receipts and stream the exact result. `meridian-agy-openai-tools-h0C87G`. |
 | `e2e-antigravity-media.mjs` | Five checks: random PDF content, public HTTPS image, local speech transcript, sampled video receipt, numeric-enum schema with a nonmatching stop. `meridian-agy-media-9e5X4P`. |
 | `e2e-antigravity-native-tools.mjs` | Four checks: native self subagent arithmetic, isolated browser retrieves a random local-page heading, child hook denies a disposable non-attachment file, cancellation after child invocation releases active CLI process. `meridian-agy-native-tools-XMQrEz`. Earlier production browser/guard gate: `meridian-agy-native-tools-CnTWSG`. |
 | Actual Pi 0.72.1 | Coding/error recovery, exact Unicode output, saved resume/fork, search, steering, compaction, abort/recovery; 21 HTTP requests. `meridian-agy-pi-XHdxN7`. |
@@ -316,6 +316,12 @@ The native browser gate used installed Chrome DevTools MCP **1.9.0** through
 personal Chrome state. Media used local Poppler, ffmpeg/ffprobe, whisper.cpp 1.9.4,
 a local ggml-base model and Python 3.11 with ReportLab/Pillow. These gates consume
 the signed-in subscription; they do not use an API-key/SDK fallback.
+
+The new Windows transport CI initially failed because its test harness applied
+C-runtime argument escaping to a `cmd.exe` command string, passing literal
+backslash-quoted executable names. The harness now supplies the outer `/s /c`
+quotes and `windowsVerbatimArguments`; the hook command itself is unchanged.
+Authenticated Windows CLI behavior is still unverified.
 
 Retained failures explain the changes rather than disappearing behind reruns:
 

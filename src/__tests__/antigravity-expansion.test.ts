@@ -66,7 +66,7 @@ describe('Antigravity expanded boundaries', () => {
       await writeFile(file, 'console.log("HOOK_OK")')
       const command = agHookCommand(process.execPath, file)
       const result = process.platform === 'win32'
-        ? await promisify(execFile)('cmd.exe', ['/d', '/s', '/c', command], { timeout: 5000 })
+        ? await promisify(execFile)('cmd.exe', ['/d', '/s', '/c', '"' + command + '"'], { timeout: 5000, windowsVerbatimArguments: true })
         : await promisify(execFile)('/bin/sh', ['-c', command], { timeout: 5000 })
       expect(result.stdout.trim()).toBe('HOOK_OK')
     } finally { await rm(root, { recursive: true, force: true }) }
