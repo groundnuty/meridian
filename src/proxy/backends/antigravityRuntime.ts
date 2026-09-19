@@ -4,7 +4,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { mkdtemp, mkdir, realpath, writeFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
 import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, hasAgImages, renderAgPrompt, contractKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
@@ -173,9 +173,10 @@ export class AntigravityRun {
       this.queue.push({ kind: "tool", call })
     })
   }
+  get reclaimable(): boolean { return !this.busy && !!this.delivered && !this.stopped }
   markDelivered(call: AgCall): void {
     this.delivered = call
-    this.pendingTimer = setTimeout(() => this.abort(new AntigravityError("Client tool result deadline expired; start a fresh turn", 409, "invalid_request_error")), this.runtime.pendingToolTimeoutMs)
+    this.pendingTimer = setTimeout(() => this.abort(new AntigravityError("Client tool result deadline expired; completed history can be replayed", 409, "invalid_request_error")), this.runtime.pendingToolTimeoutMs)
     this.pendingTimer.unref()
   }
   async accept(result: AgResult, clientMessages: AgMessage[] = []): Promise<void> {
@@ -186,18 +187,20 @@ export class AntigravityRun {
     if (!pending || result.tool_use_id !== this.delivered?.id) throw new AntigravityError("Tool result was not requested by this turn", 409)
     clearTimeout(this.pendingTimer)
     this.pending.delete(result.tool_use_id)
+    this.runtime.rememberConsumedTool(result.tool_use_id)
     this.runtime.toolOwners.delete(result.tool_use_id)
     this.delivered = undefined
     pending.resolve({ ...prepared, clientMessages: messages })
   }
   async stopAtSequence(): Promise<void> {
-    this.abort(new AntigravityError("Client stop sequence reached", 499, "api_error"), false)
+    this.abort(new AntigravityError("Client stop sequence reached", 499, "api_error"), "completed")
     await this.settled
   }
-  abort(error: Error, failed = true): void {
+  abort(error: Error, outcome: "failed" | "completed" | "reclaimed" = "failed"): void {
     if (this.stopped) return
     this.stopped = true
-    if (failed) this.runtime.failed++
+    if (outcome === "failed") this.runtime.failed++
+    else if (outcome === "reclaimed") this.runtime.reclaimed++
     else if (!this.exited) this.runtime.completed++
     this.queue.fail(error)
     for (const [id, pending] of this.pending) { this.runtime.toolOwners.delete(id); pending.reject(error) }
@@ -236,9 +239,19 @@ export class AntigravityRuntime {
   // Live requests, not a durable session cache. Completed turns replay client history.
   readonly runs = new Map<string, AntigravityRun>()
   readonly toolOwners = new Map<string, AntigravityRun>()
+  // Bounded duplicate protection, not a durable or exactly-once execution ledger.
+  private readonly consumedTools = new Set<string>()
+  readonly recoveringTools = new Set<string>()
+  hasConsumedTool(id: string): boolean { return this.consumedTools.has(createHash("sha256").update(id).digest("hex")) }
+  rememberConsumedTool(id: string): void {
+    // Recovered IDs are client-supplied; retain fixed-size digests, never large strings.
+    this.consumedTools.add(createHash("sha256").update(id).digest("hex"))
+    if (this.consumedTools.size > 4096) this.consumedTools.delete(this.consumedTools.values().next().value!)
+  }
   mcpUrl = ""
   draining = false
   cliVersion = ""
+  reclaimed = 0
   completed = 0
   failed = 0
   preparing = 0
@@ -360,9 +373,18 @@ export class AntigravityRuntime {
   async create(request: AgRequest, signal?: AbortSignal): Promise<AntigravityRun> {
     if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (((request.tools.length && request.tool_choice?.type !== "none") || hasAgImages(request.messages)) && !this.options.allowToolBridge) throw new AntigravityError("Client tools and images require explicit MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1; see the Antigravity guide")
-    if (this.runs.size + this.preparing >= this.maxConcurrent) throw new AntigravityError("Antigravity process capacity is full; pending client tools count toward capacity", 429, "rate_limit_error", 5)
+    const reclaim = this.runs.size + this.preparing >= this.maxConcurrent
+      ? [...this.runs.values()].find(run => run.reclaimable) : undefined
+    if (this.runs.size + this.preparing >= this.maxConcurrent && !reclaim) throw new AntigravityError("Antigravity process capacity is full with active requests", 429, "rate_limit_error", 5)
+    // Reserve admission and claim the idle process synchronously, before waiting
+    // for exit. Concurrent admissions cannot reclaim the same process or exceed capacity.
     this.preparing++
+    if (reclaim) {
+      reclaim.busy = true
+      reclaim.abort(new AntigravityError("Idle tool process reclaimed; completed history can be replayed", 409), "reclaimed")
+    }
     try {
+      if (reclaim) await reclaim.settled
       await this.initialize()
       // Model discovery may be cached, subscription/provider authorization cannot be.
       await this.verifyAccount()

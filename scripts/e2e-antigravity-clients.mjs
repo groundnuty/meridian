@@ -33,7 +33,8 @@ try {
   if (!proxy.server.listening) await once(proxy.server, 'listening')
   const address = proxy.server.address()
   assert(address && typeof address !== 'string')
-  const url = `http://127.0.0.1:${address.port}`
+  let url = `http://127.0.0.1:${address.port}`
+  let restarted = false
   relay = createServer(async (req, res) => {
     const abort = new AbortController()
     res.once('close', () => { if (!res.writableFinished) abort.abort() })
@@ -41,6 +42,20 @@ try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk)
       const raw = Buffer.concat(chunks).toString('utf8')
       if (raw) observed.push(JSON.parse(raw))
+      const body = raw ? JSON.parse(raw) : undefined
+      const returned = body?.messages?.at(-1)?.content
+      if (process.env.E2E_AGY_RECOVERY === '1' && !restarted && Array.isArray(returned) && returned.some(block => block.type === 'tool_result' && !block.is_error)) {
+        restarted = true
+        await proxy.close()
+        proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true } })
+        if (!proxy.server.listening) await once(proxy.server, 'listening')
+        const replacement = proxy.server.address()
+        assert(replacement && typeof replacement !== 'string')
+        url = `http://127.0.0.1:${replacement.port}`
+        report.restartedBeforeRequest = observed.length
+        report.recoveredToolIds = returned.filter(block => block.type === 'tool_result').map(block => block.tool_use_id)
+        console.log('Restarted backend before forwarding completed client tool result')
+      }
       await writeFile(join(root, 'requests.json'), JSON.stringify(observed, null, 2))
       const response = await fetch(url + req.url, { method: req.method, headers: { 'content-type': 'application/json' }, body: raw || undefined, signal: abort.signal })
       if (response.status >= 400) console.log('HTTP', response.status, await response.clone().text())
@@ -113,6 +128,14 @@ try {
   assert(JSON.stringify(results.get(shell.id)?.content).includes(`${receipt}:21`), 'Computed receipt must return through the shell tool result')
   assert.equal(results.size, calls.size, 'Every observed tool call must receive its correlated result')
   assert(observed.every(body => body.stream === true), `Actual ${client} must use streaming`)
+  if (process.env.E2E_AGY_RECOVERY === '1') {
+    assert(restarted, 'Recovery mode must replace the backend before a completed tool result')
+    // The completed successful read must not be emitted again after restart.
+    const recoveredCall = calls.get(report.recoveredToolIds[0])
+    assert(recoveredCall)
+    assert.equal([...calls.values()].filter(call => call.name === recoveredCall.name && JSON.stringify(call.input) === JSON.stringify(recoveredCall.input)).length, 1, 'Recovery must not repeat the already completed tool')
+    report.passed.push('backend restart between client tool execution and result delivery; no repeated completed tool')
+  }
   report.requests = observed.length
   report.tools = [...calls.values()].map(call => ({ name: call.name, isError: results.get(call.id)?.is_error === true }))
   report.passed.push(`actual ${client} read/edit/bash/write coding loop`, 'missing-file tool-error recovery', 'exact source edit', 'Unicode paths and exact Unicode output with trailing newline', 'streaming correlated tool results')

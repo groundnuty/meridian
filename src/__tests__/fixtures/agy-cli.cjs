@@ -73,8 +73,11 @@ async function main() {
     catch (error) { if (!String(error).includes('Invalid arguments')) throw error; rejected = true }
     if (!rejected) throw new Error('Invalid arguments reached the client')
   }
-  let answer = 'READY'
-  if (tools.length && !prompt.includes("SKIP_TOOLS")) {
+  const history = JSON.parse(prompt.split('Client conversation:\n').at(-1))
+  const lastContent = history.at(-1).content
+  const replayedResults = Array.isArray(lastContent) ? lastContent.filter(b => b.type === 'tool_result') : []
+  let answer = replayedResults.length ? replayedResults.map(b => (b.is_error ? 'FAILED:' : '') + b.content).join('|') : 'READY'
+  if (!replayedResults.length && tools.length && !prompt.includes("SKIP_TOOLS")) {
     emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 100, output_tokens: 5 } } })
     const calls = Array.from({ length: prompt.includes('PARALLEL2') ? 2 : 1 }, (_, n) => rpc('tools/call', { name: tools[0].name, arguments: { key: `probe${n}` } }))
     if (prompt.includes('RPC_RETRY')) calls.push(rpc('tools/call', {name:tools[0].name,arguments:{key:'probe0'}},2))

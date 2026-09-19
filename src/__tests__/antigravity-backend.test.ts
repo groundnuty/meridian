@@ -142,6 +142,7 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(answer.content[0]!.text).toBe("FAILED:client-secret")
     expect(answer.usage.input_tokens).toBe(100) // Not the earlier 100-token tool request.
     expect((await send(followup)).status).toBe(409) // No duplicate execution.
+    expect((await send({ ...followup, tool_choice: { type: "none" }, messages: [...followup.messages, { role: "user", content: "A new user turn with completed context" }] })).status).toBe(200)
   })
   it("preserves UTF-8 tool arguments split across MCP network chunks", async () => {
     const { send } = fixture()
@@ -198,25 +199,84 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(sse).toContain("event: error")
     expect(sse).not.toContain("event: message_stop")
   })
-  it("bounds pending tool lifetime and rejects stale results", async () => {
+  it("bounds pending tool lifetime and recovers completed history without repeating a call", async () => {
     const { send, runtime } = fixture({ pendingToolTimeoutMs: 40 })
     const request = initial()
     const first = await decode(await send(request))
     const run = [...runtime.runs.values()][0]!
     await run.settled
     expect(runtime.runs.size).toBe(0)
-    expect((await send({ ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: first.content[0]!.id, content: "late" }] }] })).status).toBe(409)
+    const response = await send({ ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: first.content[0]!.id, content: "late" }] }] })
+    expect(response.status).toBe(200)
+    expect((await decode(response)).content).toEqual([{ type: "text", text: "late" }])
   })
-  it("counts pending tools toward capacity and drains all processes", async () => {
+  it("reclaims idle tools under pressure and replays their completed result", async () => {
     const { send, server, runtime } = fixture({ maxConcurrent: 1 })
-    await send(initial())
-    const overloaded = await send(initial())
-    expect(overloaded.status).toBe(429)
-    expect(overloaded.headers.get("retry-after")).toBe("5")
+    const request = initial()
+    const first = await decode(await send(request))
+    const idle = [...runtime.runs.values()][0]!
+    expect((await send({ ...initial(), tools: [] })).status).toBe(200)
+    await idle.settled
+    expect(runtime.reclaimed).toBe(1)
+    expect(runtime.failed).toBe(0)
+    expect(runtime.toolOwners.size).toBe(0)
+    const response = await send({ ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: first.content[0]!.id, content: "reclaimed" }] }] })
+    expect((await decode(response)).content).toEqual([{ type: "text", text: "reclaimed" }])
     server.beginDrain?.()
     expect((await send(initial())).status).toBe(503)
     await runtime.close()
     expect(runtime.runs.size).toBe(0)
+  })
+  it("recovers a completed client tool after the original backend shuts down", async () => {
+    const original = fixture()
+    const request = initial()
+    const first = await decode(await original.send(request))
+    await original.server.closeBackend()
+    const replacement = fixture()
+    const continuation = { ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: first.content[0]!.id, content: "after-restart", is_error: true }] }] }
+    const response = await replacement.send(continuation)
+    expect(response.status).toBe(200)
+    expect((await decode(response)).content).toEqual([{ type: "text", text: "FAILED:after-restart" }])
+    expect((await replacement.send(continuation)).status).toBe(409)
+    expect((await replacement.send({ ...request, messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "unknown", content: "orphan" }] }] })).status).toBe(400)
+  })
+  it("claims a recovered result before preflight and releases the claim on refusal", async () => {
+    const { send, runtime } = fixture()
+    const request = { ...initial(), messages: [
+      { role: "user", content: "Use the completed lookup" },
+      { role: "assistant", content: [{ type: "tool_use", id: "previous-process", name: "lookup", input: { key: "probe" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "previous-process", content: "recovered" }] },
+    ] }
+    const first = send(request)
+    await new Promise(resolve => setTimeout(resolve, 5))
+    expect((await send(request)).status).toBe(409)
+    expect((await decode(await first)).content).toEqual([{ type: "text", text: "recovered" }])
+    expect(runtime.recoveringTools.size).toBe(0)
+    const failed = { ...request, model: "unknown", messages: request.messages.map(m => ({ ...m, content: typeof m.content === "string" ? m.content : m.content.map(b => ({ ...b, ...("id" in b ? { id: "unconsumed" } : { tool_use_id: "unconsumed" }) })) })) }
+    expect((await send(failed)).status).toBe(400)
+    expect(runtime.recoveringTools.size).toBe(0)
+    expect(runtime.hasConsumedTool("unconsumed")).toBe(false)
+    expect((await send({ ...failed, model: request.model })).status).toBe(200)
+  })
+  it("reserves reclaimed capacity before concurrent admission and never evicts active responses", async () => {
+    const { send, runtime } = fixture({ maxConcurrent: 1 })
+    await send(initial())
+    const active = send({ ...initial("HANG"), tools: [] })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    const refused = await send({ ...initial(), tools: [] })
+    expect(refused.status).toBe(429)
+    expect(refused.headers.get("retry-after")).toBe("5")
+    const deadline = Date.now() + 3000
+    while (![...runtime.runs.values()].some(run => run.child?.pid)) {
+      if (Date.now() > deadline) throw new Error("Active fixture process did not start")
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    expect((await send({ ...initial(), tools: [] })).status).toBe(429)
+    expect(runtime.reclaimed).toBe(1)
+    await runtime.close()
+    expect([502, 503]).toContain((await active).status)
+    expect(runtime.runs.size).toBe(0)
+    expect(runtime.preparing).toBe(0)
   })
   it("times out a stalled CLI and releases its process", async () => {
     const { send, runtime } = fixture({ turnTimeoutMs: 100 })

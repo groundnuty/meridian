@@ -71,11 +71,12 @@ responsibility.
 Pending tool calls retain a live `agy` process. Each continuation must preserve
 the delivered conversation prefix, model, system instructions, tool catalog and
 output budget. The result must correspond to the exact delivered tool ID.
-Changed, duplicate, unknown and expired results receive HTTP 409. New user text
+Changed live continuations and recently consumed duplicate results receive HTTP 409.
+Unpaired or malformed historical results receive HTTP 400. New user text
 may accompany the exact result or follow it in another user message. This steering
 continues the same pending process and is delivered separately from tool output. A batch of
 upstream calls is exposed as one client call per HTTP response, retaining all
-upstream correlations. A result cannot silently move to a different account.
+upstream correlations. A live result remains bound to its original process.
 
 Completed ordinary turns retain no Meridian-owned session mapping. Later
 requests replay the full client history into a new CLI conversation. This makes
@@ -86,12 +87,27 @@ explicit JSON context; it is not native role-preserving transcript import.
 Repeated MCP request IDs reuse their original result, and conflicting reuse is
 rejected. Each turn allows at most 256 distinct MCP tool calls.
 
-Meridian does not automatically retry side-effecting work. If the proxy or CLI
-dies during a pending tool call, the old result cannot resume that process.
-Start a new user turn containing the completed tool history; do not blindly
-execute a tool a second time. HTTP disconnects during active responses abort
-that request's process. Disconnecting normally after a `tool_use` response
-leaves its process waiting until the tool deadline.
+If the proxy or CLI dies, or the tool deadline expires, a later client request
+containing the complete tool-call/result history starts a fresh CLI conversation.
+No extra user message is required. The supplied results describe completed work;
+Meridian does not execute or automatically retry that work. This is history replay,
+not restoration of native CLI state. Recovery uses the currently configured account
+and its current subscription authorization checks. Keep that account stable when
+continuing a session.
+
+When capacity is full, Meridian may terminate and join an idle process waiting
+for a client tool before admitting a new request. Active HTTP responses are never
+evicted. This prevents terminal tools that never return a result from occupying
+all slots until their deadlines; a late result follows the same replay path.
+A bounded process-local ledger rejects the latest 4,096 consumed result IDs and
+concurrent recovery of the same result. This is not durable exactly-once delivery:
+after restart or ledger eviction, clients must retain their completed history and
+avoid resubmitting already answered requests. The model still decides subsequent
+tool calls; client permissions and side-effect safeguards remain important.
+
+HTTP disconnects during active responses abort that request's process.
+Disconnecting normally after a `tool_use` response leaves its process waiting
+until a result, reclamation, or the tool deadline.
 
 Temporary workspaces are removed after subprocess exit. The official CLI still
 persists its own conversations and project metadata under its normal account
@@ -104,7 +120,7 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_BACKEND` | `claude` | Set to `antigravity` to select Antigravity, or `combined` for both providers |
 | `MERIDIAN_AGY_PATH` | `agy` | Official CLI executable |
 | `MERIDIAN_AGY_ALLOW_TOOL_BRIDGE` | off | Explicit tool bridge permission opt-in |
-| `MERIDIAN_AGY_MAX_CONCURRENT` | `4` | Maximum live processes, including pending tools |
+| `MERIDIAN_AGY_MAX_CONCURRENT` | `4` | Maximum live processes; idle pending tools can yield capacity |
 | `MERIDIAN_AGY_TURN_TIMEOUT_MS` | `300000` | Entire subprocess lifetime, including tool waits |
 | `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Deadline for each delivered client tool result |
 
@@ -163,7 +179,7 @@ For a full client coding loop, run `node scripts/e2e-antigravity-tools.mjs`
 after building. It verifies actual Pi `read`, `edit`, `bash` and `write`, recovery
 from a tool error, Unicode paths, and exact source/output bytes. This is separate
 from the basic read/write gate; neither establishes arbitrary client compatibility
-or recovery of a pending process after a crash.
+or restoration of a pending native process after a crash. See the recovery gates below.
 
 Implementation tracks [#1073](https://github.com/rynfar/meridian/issues/1073),
 following the [research PR](https://github.com/rynfar/meridian/pull/1050).
@@ -208,7 +224,8 @@ Each new process rechecks account-provider and paid-credit settings, even when
 the model catalogue is cached. Preflight work counts toward capacity. Readiness
 checks CLI configuration, not a billable model call; account quota failures are
 shown separately in provider status. A quota failure maps to HTTP 429 (or an SSE
-error) with retry guidance. Work is never automatically replayed after errors.
+error) with retry guidance. Failed active requests are not automatically retried. A subsequent complete client
+tool-result request can recover through history replay.
 Successful terminal CLI output is committed only after a clean process exit.
 Slow stream readers have a 1 MiB response-buffer budget; deadlines and process
 shutdown still apply. Terminal sandboxing is requested in addition to the deny
@@ -366,7 +383,7 @@ pending result while preserving the other contract fields. Queued calls excluded
 by a new choice are rejected. `disable_parallel_tool_use` is accepted: the bridge
 already exposes one call per client response. Tools still awaiting a client result
 retain their process until the result, cancellation, or configured deadline;
-this includes terminal client tools that do not send another request.
+idle waiting processes may also be reclaimed when another request needs capacity.
 
 Up to four nonempty `stop_sequences` of at most 1024 characters are enforced on
 assistant text at Meridian's response boundary. Matching spans streaming chunks,
@@ -388,3 +405,51 @@ permission policy, explicitly allow its `StructuredOutput` tool when requesting
 that feature; a hidden tool cannot satisfy the client's format requirement. The first gate exercises native
 schema output, forced tool selection/continuation, text stops through JSON/SSE
 and a multi-megabyte image request through production Node and live CLI vision.
+
+
+## What the remaining limits mean
+
+| Control | Meaning | What is lost through the current CLI |
+| --- | --- | --- |
+| Hard `max_tokens` | Enforce an exact upper bound on generated tokens | The requested limit is advisory. A long answer or tool loop can use more quota and time than that number suggests. Response byte limits and process deadlines remain enforced. |
+| Numeric thinking budget | Allocate a specific number of tokens to internal reasoning | No exact reasoning-token allowance. Supported Gemini low/medium/high variants offer coarser effort selection; disabling a client's budget control does not disable the model's intrinsic reasoning. |
+| `temperature`, `top_p`, `top_k` | Tune how the model samples its next tokens | No direct randomness/diversity tuning. Prompts can request a style, but do not implement sampling parameters or guarantee repeatability. |
+
+These controls do not determine whether file editing, shell commands, search,
+images or client delegation are available. Truncating returned text locally would
+not impose a native token/quota budget and could break JSON or tool arguments;
+Meridian does not claim that workaround as a hard limit.
+
+Actual unsupported surfaces remain:
+
+- OpenAI Chat Completions/Responses and token-count endpoints for Antigravity.
+  Pi and OpenCode use the supported Anthropic Messages route.
+- Document/PDF, audio, video and URL-based image inputs; generated media and
+  native reasoning/signature blocks. Supplied PNG/JPEG/GIF/WebP inputs are accepted;
+  the recorded live vision evidence currently covers PNG.
+- Native persistent conversation/cache reuse. Client saved sessions, forks, undo
+  and compaction work through full history replay, with extra latency/input quota.
+- Antigravity's built-in shell, filesystem, browser and subagents through this
+  bridge. Equivalent tools supplied by Pi/OpenCode execute in those clients;
+  OpenCode's client-owned `task` delegation is verified.
+- Claude profile pools, Claude-specific plugins and full durable Claude telemetry
+  for the Google account. Shared provider navigation, quota windows and recent
+  activity work in the web UI and macOS app.
+- Arbitrary schema features rejected by the selected upstream model, text stops
+  combined with forced tools/schema output, and true parallel client-tool delivery
+  in a single response. Calls are delivered serially.
+- Windows execution and verified Linux production support. CLI versions other
+  than the verified version are refused pending compatibility testing.
+
+Run `node scripts/e2e-antigravity-recovery.mjs` for live expiry and capacity
+reclamation checks. Recovery verification uses the actual client while replacing its backend between
+successful tool execution and result delivery:
+
+```sh
+E2E_AGY_RECOVERY=1 E2E_CLIENT=pi node scripts/e2e-antigravity-clients.mjs
+E2E_AGY_RECOVERY=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-clients.mjs
+```
+
+The gate checks the finished tool is not requested again, then verifies the full
+coding, saved-session and client-delegation/session flows. This establishes
+completed-history recovery, not durable exactly-once semantics or native resume.

@@ -241,6 +241,42 @@ they are not native token caps and early-stop usage can be incomplete. Hard toke
 caps, numeric reasoning budgets, sampling controls, arbitrary extensions, native
 agy persistent resume, Linux and Windows are not established by these gates.
 
+### Antigravity tool-result recovery and main integration
+
+```sh
+npm run build
+node scripts/e2e-antigravity-recovery.mjs
+E2E_AGY_RECOVERY=1 E2E_CLIENT=pi node scripts/e2e-antigravity-clients.mjs
+E2E_AGY_RECOVERY=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-clients.mjs
+```
+
+The direct lifecycle gate expires a waiting process and separately reclaims one
+at a single-process capacity limit, then supplies the completed result and
+requires the exact random receipt without another tool call. Client recovery
+mode replaces the backend after a successful client tool has executed but before
+forwarding its result. It verifies that completed call is not repeated, exact
+file edits/output survive, and subsequent coding and saved-session flows work.
+This is explicit completed-history replay, not native process restoration or
+durable exactly-once execution. Failed active requests are not automatically
+retried.
+
+**Verified 2026-09-19:** after integrating main through `1ff2c678`, actual Pi
+0.72.1 passed 12 checks/21 requests in `meridian-agy-pi-acHx6U`; actual OpenCode
+1.18.31 passed 9 checks/16 requests in `meridian-agy-opencode-gugWII`. Both
+recovered the completed read without repeating it, then completed read/edit/bash/
+write, exact Unicode output, session resume/fork and search. Pi also passed
+steering, compaction and abort; OpenCode passed client-owned task delegation.
+Both used macOS arm64, Node 22.22.3, official agy 1.2.7 and Gemini 3.8 Flash Low.
+
+The direct expiry/capacity gate passed both cases in
+`meridian-agy-recovery-jY5StQ` with the same CLI/model/Node/platform. It returned
+the exact newly generated receipt after each original process had exited.
+
+The merged native macOS app passed all 9 checks in
+`meridian-agy-desktop-MIvv87` (nested client `meridian-agy-e2e-IpdsU7`): managed
+combined service, both actual provider routes, exact Pi copy, shared activity,
+separate quotas, provider/request/tray navigation, standalone mode and shutdown.
+
 ## Quick Start
 
 ```bash

@@ -40,11 +40,17 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     const suffix = body.messages.slice(suffixStart)
     const results = suffix.flatMap(blocks).filter(b => b.type === "tool_result")
     const owners = results.map(result => runtime.toolOwners.get(result.tool_use_id)).filter(run => run !== undefined)
-    if (owners.length || blocks(body.messages.at(-1)!).some(b => b.type === "tool_result")) {
+    // An explicitly appended user turn may replay completed context. Duplicate
+    // protection applies to result continuations, not unrelated new user input.
+    const continuationResults = owners.length || blocks(body.messages.at(-1)!).some(block => block.type === "tool_result") ? results : []
+    if (continuationResults.some(result => runtime.hasConsumedTool(result.tool_use_id) || runtime.recoveringTools.has(result.tool_use_id))) throw new AntigravityError("Antigravity tool result was already consumed; append the subsequent assistant response before continuing", 409)
+    // A validated complete history is also a stateless recovery request. Only
+    // correlate against live processes; never re-execute a tool on the client's behalf.
+    if (owners.length) {
       if (results.length !== 1) throw new AntigravityError("Antigravity requires one requested tool result per continuation", 409)
       const result = results[0]!
       const run = runtime.toolOwners.get(result.tool_use_id)
-      if (!run) throw new AntigravityError("Antigravity tool turn expired or was interrupted; start a new user turn with the complete completed-tool history", 409)
+      if (!run) throw new AntigravityError("Antigravity continuation contains an unknown live tool", 409)
       if (run.busy) throw new AntigravityError("Antigravity turn already has an active response", 409)
       if (run.delivered?.id !== result.tool_use_id || run.contract !== contractKey(body) || historyKey(run.history) !== historyKey(body.messages.slice(0, suffixStart))) {
         throw new AntigravityError("Pending Antigravity tool continuation changed its history, model, instructions or tools", 409)
@@ -64,9 +70,15 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       }
       return run
     }
-    const run = await runtime.create(body, signal)
-    run.busy = true
-    return run
+    for (const result of continuationResults) runtime.recoveringTools.add(result.tool_use_id)
+    try {
+      const run = await runtime.create(body, signal)
+      for (const result of continuationResults) runtime.rememberConsumedTool(result.tool_use_id)
+      run.busy = true
+      return run
+    } finally {
+      for (const result of continuationResults) runtime.recoveringTools.delete(result.tool_use_id)
+    }
   }
 
   async function messages(request: Request): Promise<Response> {
@@ -201,7 +213,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         if (runtime.draining) return Response.json({ status: "draining" }, { status: 503 })
         await runtime.initialize()
         await runtime.verifyAccount()
-        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: false, maxTokens: "advisory" }, processes: runtime.runs.size, preparing: runtime.preparing, completed: runtime.completed, failed: runtime.failed })
+        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: false, toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory" }, processes: runtime.runs.size, preparing: runtime.preparing, reclaimed: runtime.reclaimed, completed: runtime.completed, failed: runtime.failed })
       }
       if (request.method === "GET" && path === "/v1/models") {
         const models = await runtime.availableModels()

@@ -38,7 +38,13 @@ Native schema mode permits `finish`, withholds prose and emits only the final
 structured result after clean exit. Text stops deliberately terminate and join
 the process; they are separate from native token-budget controls.
 Completed requests have no cached mapping; the next turn replays client
-history. Native Claude transcript lifecycle and lineage persistence cannot be
+history. A complete tool-call/result request without a live owner also replays,
+allowing recovery after expiry or process restart without an extra user message.
+A bounded set of consumed tool IDs rejects recent duplicate results; a transient
+claim prevents simultaneous recovery during preflight. Neither is a durable
+session cache or exactly-once ledger. Admission may reclaim a process waiting
+idle for a tool result, joining it before replacement; active responses are never
+evicted. A late completed result can use the same replay path. Native Claude transcript lifecycle and lineage persistence cannot be
 applied to Antigravity. `ProxyInstance.close()` joins owned subprocesses;
 direct fetch embedders use `closeBackend()`.
 
