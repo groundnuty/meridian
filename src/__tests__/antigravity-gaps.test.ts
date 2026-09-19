@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { rm, readdir } from 'node:fs/promises'
+import { rm } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { join, resolve, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -22,9 +24,12 @@ afterEach(async () => {
       try { await rm(root, { recursive: true, force: true }); break }
       catch (error) {
         if (process.platform !== 'win32' || attempt >= 9 || !(error instanceof Error && 'code' in error && ['EBUSY','EPERM','ENOTEMPTY'].includes(String(error.code)))) {
-          for (const entry of await readdir(root)) {
-            try { await rm(join(root,entry), {recursive:true,force:true}) }
-            catch (itemError) { console.error('Fixture cleanup retained entry:', entry, String(itemError)) }
+          if (process.platform === 'win32' && attempt >= 9) {
+            // Use production Node's filesystem implementation for the final
+            // removal assertion when Bun's recursive rm still reports EBUSY.
+            // This must remove the directory or reject; no leaked fixture is ignored.
+            await promisify(execFile)('node', ['--input-type=module', '-e', "import {rm} from 'node:fs/promises';await rm(process.argv[1],{recursive:true,force:true,maxRetries:10,retryDelay:100})", root], {timeout:10000})
+            break
           }
           throw error
         }
