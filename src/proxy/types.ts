@@ -1,8 +1,14 @@
+import type { AntigravityPlugin } from "./backends/antigravityPlugins"
 import type { Server } from "node:http"
 import type { ProfileConfig } from "./profiles"
 
 export interface AntigravityOptions {
   executable?: string
+  /** Optional Meridian-owned SQLite file for response snapshots and bounded telemetry. */
+  statePath?: string
+  /** Explicit provider plugins; Claude SDK transforms are not loaded here. */
+  plugins?: AntigravityPlugin[]
+  pluginPaths?: string[]
   /** Explicit consent to the auto-approval + deny-hook tool bridge. */
   allowToolBridge?: boolean
   maxConcurrent?: number
@@ -64,6 +70,8 @@ export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig 
     ...DEFAULT_PROXY_CONFIG, ...config, backend,
     ...(backend !== "claude" ? { antigravity: {
       executable: process.env.MERIDIAN_AGY_PATH,
+      statePath: process.env.MERIDIAN_AGY_STATE_PATH || undefined,
+      pluginPaths: process.env.MERIDIAN_AGY_PLUGIN_PATHS ? parseAgPluginPaths(process.env.MERIDIAN_AGY_PLUGIN_PATHS) : undefined,
       allowToolBridge: process.env.MERIDIAN_AGY_ALLOW_TOOL_BRIDGE === "1",
       allowNativeBrowser: process.env.MERIDIAN_AGY_ALLOW_NATIVE_BROWSER === "1",
       browserMcpExecutable: process.env.MERIDIAN_AGY_BROWSER_MCP_PATH,
@@ -120,4 +128,10 @@ export const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   profiles: undefined,
   defaultProfile: undefined,
   version: undefined,
+}
+
+function parseAgPluginPaths(value: string): string[] {
+  const paths: unknown = JSON.parse(value)
+  if (!Array.isArray(paths) || paths.some(path => typeof path !== 'string' || !path) || paths.length > 16) throw new Error('MERIDIAN_AGY_PLUGIN_PATHS must be a JSON array of at most 16 module paths')
+  return paths
 }

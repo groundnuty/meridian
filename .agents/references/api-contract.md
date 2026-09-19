@@ -13,10 +13,16 @@ External plugins depend on these interfaces. **Changes require project owner app
 | `x-meridian-profile` header | `server.ts`, `profiles.ts` | Per-request profile selection |
 | `GET /health` response shape | `server.ts` | Plugin health checks |
 | `/health` `backend` field | `server.ts` / `backends/antigravity.ts` | Desktop provider compatibility check (#1073) |
-| Antigravity `/v1/responses` and `/v1/responses/:id` | `backends/antigravityOpenai.ts`, `backends/antigravityResponses.ts` | OpenAI clients; bounded process-local continuation/retrieval/deletion (#1073) |
+| Antigravity `/v1/responses` and `/v1/responses/:id` | `backends/antigravityOpenai.ts`, `backends/antigravityResponses.ts` | OpenAI clients; bounded continuation/retrieval/deletion, optional durable state, background cancellation/event replay/input listing and input-token estimates (#1073) |
 | `/providers/status` and `/antigravity/*` | `server.ts` / `backends/` | Shared provider UI and Antigravity clients (#1073) |
 | `/health` `build` block | `buildInfo.ts` | Version/provenance drift detection |
 | `POST /v1/messages` request/response format | `server.ts` | All agents (Anthropic API contract) |
 | `GET /profiles/list` response shape | `server.ts` | Profile management UI and CLI |
 | `POST /profiles/active` request/response | `server.ts` | Profile switching from CLI and UI |
 If you need to modify any of these, open an issue first — breaking changes affect downstream plugin authors.
+
+Antigravity additionally accepts `statePath`, `plugins` and `pluginPaths` under its
+backend options. These are provider-specific and do not change Claude plugin
+contracts. Persistence is opt-in and bounded; background jobs are not restart
+resumable. `AntigravityPlugin` request results are revalidated and response/telemetry
+observers cannot mutate saved responses. Owner authorization is tracked in #1073.

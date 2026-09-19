@@ -1,9 +1,13 @@
+import { AgGrammars } from "./antigravityGrammar"
+import { AgPlugins } from "./antigravityPlugins"
+import { AgNativeSessions, type AgNativeSnapshot } from "./antigravitySessions"
+import { AgState } from "./antigravityState"
 import { agNativeTools, agNativeAllowed } from "./antigravityNative"
 import { agHookCommand, signalAgProcess } from "./antigravityProcess"
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { promisify } from "node:util"
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http"
-import { mkdtemp, mkdir, realpath, writeFile, rm } from "node:fs/promises"
+import { mkdtemp, mkdir, realpath, writeFile, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
@@ -19,15 +23,17 @@ type AgToolReply = AgResult & { clientMessages?: AgMessage[] }
 
 export interface AgExchange {
   requestId: string; timestamp: number; durationMs: number; model: string; status: number; error?: string;
-  inputTokens: number; outputTokens: number; cacheReadTokens: number;
+  inputTokens: number; outputTokens: number; cacheReadTokens: number; conversationId?: string; continuation?: string;
 }
+const exchangeSchema = z.object({ conversationId: z.string().optional(), continuation: z.string().optional(), requestId: z.string(), timestamp: z.number(), durationMs: z.number(), model: z.string(), status: z.number(), error: z.string().optional(), inputTokens: z.number(), outputTokens: z.number(), cacheReadTokens: z.number() })
+const nativeSchema = z.object({ runId: z.string(), name: z.string(), state: z.string(), timestamp: z.number() })
 const quotaSchema = z.object({ command: z.object({ data: z.object({ groups: z.array(z.object({
   name: z.string(), buckets: z.array(z.object({ id: z.string(), window: z.string(), remaining_fraction: z.number().min(0).max(1), reset_time: z.string() })),
 })) }) }) })
 export interface AgQuota { fetchedAt?: number; error?: string; windows: Array<{ type: string; group: string; utilization: number; resetsAt: number }> }
 const exec = promisify(execFile)
 const envelope = z.object({
-  event: z.string(),
+  event: z.string(), conversation_id: z.string().optional(),
   step_update: z.object({ step_type: z.string().optional(), tool_name: z.string().optional(), state: z.string().optional(), text_delta: z.string().optional(), usage: z.object({ input_tokens: z.number().optional(), output_tokens: z.number().optional(), cache_read_tokens: z.number().optional() }).optional() }).optional(),
   result: z.object({ status: z.string(), error: z.string().optional(), denied_actions: z.array(z.unknown()).optional(), structured_output: z.unknown().optional() }).optional(),
 })
@@ -49,7 +55,11 @@ export class AntigravityRun {
   delivered: AgCall[] = []
   child?: ChildProcessWithoutNullStreams
   private workspace?: string
+  conversationId?: string
+  continuation = "new"
+  private completedSnapshot = false
   private attachments?: AgAttachments
+  private readonly grammars: AgGrammars
   private readonly attachmentAbort = new AbortController()
   private stopped = false
   private terminal = false
@@ -69,7 +79,9 @@ export class AntigravityRun {
   private readonly rpcCalls = new Map<string, { identity: string; result: Promise<AgToolReply> }>()
   private settledResolve!: () => void
   readonly settled = new Promise<void>(resolve => { this.settledResolve = resolve })
-  constructor(readonly runtime: AntigravityRuntime, readonly request: AgRequest) {
+  constructor(readonly runtime: AntigravityRuntime, readonly request: AgRequest, private readonly restored?: AgNativeSnapshot) {
+    this.grammars = new AgGrammars(request, this.attachmentAbort.signal)
+    this.continuation = restored ? "restored" : "new"
     this.reusable = runtime.options.reuseConversations !== false && !request.output_config?.format && !request.stop_sequences?.length
     this.history = request.messages
     this.contract = contractKey(request)
@@ -85,11 +97,14 @@ export class AntigravityRun {
       this.timer = setTimeout(() => this.abort(new AntigravityError("Antigravity turn timed out", 504, "api_error")), this.runtime.turnTimeoutMs)
       this.timer.unref()
     try {
-      this.workspace = await realpath(await mkdtemp(join(tmpdir(), "meridian-agy-")))
-      await mkdir(join(this.workspace, ".agents"))
+      await this.grammars.prepare()
+      this.workspace = this.restored?.workspace ?? await realpath(await mkdtemp(this.runtime.nativeSessions ? join(this.runtime.nativeSessions.directory, "conversation-") : join(tmpdir(), "meridian-agy-")))
+      this.runtime.nativeSessions?.register(this.workspace)
+      await mkdir(join(this.workspace, ".agents"), { recursive: true })
       const tools = [...this.request.tools, ...[parallelAgTool({ ...this.request, tool_choice: { type: "auto" } })].filter(tool => tool !== undefined)]
       this.attachments = new AgAttachments(this.workspace, this.attachmentAbort.signal)
-      const messages = await this.attachments.messages(this.request.messages)
+      const messages = await this.attachments.messages(this.request.messages.slice(this.restored?.count ?? 0))
+      await writeFile(join(this.workspace, "policy-audit.jsonl"), "", { mode: 0o600 })
       const hookPath = join(this.workspace, "policy.cjs")
       // Workspace contains bridge configuration and supplied attachment bytes only.
       // Permit client MCP dispatch, exact supplied image reads, or schema submission.
@@ -103,7 +118,7 @@ export class AntigravityRun {
         } } : {}),
       } }))
       if (this.stopped) { await this.cleanup(); return }
-      const args = ["--new-project", "--add-dir", this.workspace, "--input-format", "stream-json", "--model", this.request.model, "--output-format", "stream-json", "--print-timeout", `${Math.ceil(this.runtime.turnTimeoutMs / 1000)}s`, "--disable-slash-commands", "--sandbox"]
+      const args = [...(this.restored ? ["--conversation", this.restored.conversationId] : ["--new-project"]), "--add-dir", this.workspace, "--input-format", "stream-json", "--model", this.request.model, "--output-format", "stream-json", "--print-timeout", `${Math.ceil(this.runtime.turnTimeoutMs / 1000)}s`, "--disable-slash-commands", "--sandbox"]
       if (this.request.output_config?.format) {
         const schemaPath = join(this.workspace, "output-schema.json")
         await writeFile(schemaPath, JSON.stringify(agUpstreamSchema(this.request.output_config.format.schema)))
@@ -113,6 +128,7 @@ export class AntigravityRun {
       if (agNativeTools(this.runtime.options).length || (this.request.tools.length && this.runtime.options.allowToolBridge) || this.attachments.present) args.push("--dangerously-skip-permissions")
       if (this.stopped) { await this.cleanup(); return }
       const child = this.child = spawn(this.runtime.executable, args, { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
+      if (child.pid) this.runtime.nativeSessions?.register(this.workspace, child.pid)
       child.stdin.on("error", error => this.abort(new AntigravityError(`Antigravity input failed: ${error.message}`, 502, "api_error")))
       child.stdin.write(JSON.stringify({ event: "user", message: { content: this.prompt({ ...this.request, messages }) } }) + "\n")
       if (!this.reusable) child.stdin.end()
@@ -128,6 +144,7 @@ export class AntigravityRun {
         try {
           if (this.terminal) throw new Error("CLI emitted data after its terminal result")
           const event = envelope.parse(JSON.parse(line))
+          if (event.event === "init" && event.conversation_id) this.conversationId = event.conversation_id
           const step = event.step_update
           if ((step?.step_type === "tool" || step?.step_type === "subagent") && step.tool_name && agNativeTools(this.runtime.options).includes(step.tool_name)) this.runtime.recordNative({ runId: this.id, name: step.tool_name, state: step.state ?? "unknown", timestamp: Date.now() })
           if (step?.step_type === "agent_response" && step.text_delta && !this.request.output_config?.format) this.queue.push({ kind: "text", text: step.text_delta })
@@ -206,16 +223,22 @@ export class AntigravityRun {
       if (invalid) return Promise.reject(new Error(`Invalid arguments for ${call.name}: ${invalid}`))
     }
     if (this.toolCalls + parsed.calls.length > 256) return Promise.reject(new Error("Antigravity conversation exceeded 256 client tool calls"))
-    const result = Promise.all(parsed.calls.map(call => this.call(call.name, call.arguments))).then(results => ({ type: "tool_result" as const, tool_use_id: "batch", content: JSON.stringify(results.map((result, index) => ({ name: parsed.calls[index]!.name, input: parsed.calls[index]!.arguments, result: result.content, is_error: result.is_error ?? false, clientMessages: result.clientMessages }))) }))
+    const result = (async () => {
+      await Promise.all(parsed.calls.map(call => this.grammars.validate(call.name, call.arguments)))
+      if (this.pending.size + parsed.calls.length > 32 || this.toolCalls + parsed.calls.length > 256) throw new Error('Parallel tool capacity changed during validation')
+      return Promise.all(parsed.calls.map(call => this.call(call.name, call.arguments, true)))
+    })().then(results => ({ type: "tool_result" as const, tool_use_id: "batch", content: JSON.stringify(results.map((result, index) => ({ name: parsed.calls[index]!.name, input: parsed.calls[index]!.arguments, result: result.content, is_error: result.is_error ?? false, clientMessages: result.clientMessages }))) }))
     this.rpcCalls.set(key, { identity, result })
     return result
   }
-  async call(name: string, input: Record<string, unknown>): Promise<AgToolReply> {
+  async call(name: string, input: Record<string, unknown>, grammarChecked = false): Promise<AgToolReply> {
     if (this.stopped || this.terminal) throw new Error("Turn is closed")
     const validate = this.toolValidators.get(name)
     if (!validate) throw new Error("Unknown client tool")
     const invalid = agSchemaError(validate, input)
     if (invalid) throw new Error(`Invalid arguments for ${name}; correct them to match the supplied schema: ${invalid}`)
+    if (!grammarChecked) await this.grammars.validate(name, input)
+    if (this.stopped || this.terminal) throw new Error("Turn is closed")
     if (this.pending.size >= 32) throw new Error("Too many outstanding tools")
     if (this.toolCalls >= 256) throw new Error("Antigravity conversation exceeded 256 client tool calls")
     this.toolCalls++
@@ -233,7 +256,10 @@ export class AntigravityRun {
       this.contract === contractKey(request) && historyKey(this.history) === historyKey(request.messages.slice(0, this.history.length)) &&
       request.messages.slice(this.history.length).every(message => message.role === "user")
   }
+  rememberCompleted(): void { this.completedSnapshot = true }
   async resume(request: AgRequest, signal?: AbortSignal): Promise<void> {
+    this.completedSnapshot = false
+    this.continuation = "live"
     this.busy = true
     this.idle = false
     clearTimeout(this.pendingTimer)
@@ -269,6 +295,7 @@ export class AntigravityRun {
     return [first, ...this.queue.takeQueuedTools()]
   }
   async accept(results: AgResult[], clientMessages: AgMessage[] = []): Promise<void> {
+    this.continuation = "tool-result"
     if (results.length !== this.delivered.length || results.some(result => !this.delivered.some(call => call.id === result.tool_use_id))) throw new AntigravityError("Tool results must match the entire delivered batch", 409)
     if (hasAgImages([{ role: "user", content: results }, ...clientMessages]) && !this.runtime.options.allowToolBridge) throw new AntigravityError("Images require explicit MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1")
     // Prepare the whole batch before resolving anything: malformed attachments
@@ -313,6 +340,7 @@ export class AntigravityRun {
     if (!this.child?.pid) return
     signalAgProcess(this.child, signal)
   }
+  private stateFailure(error: unknown) { this.runtime.stateError = String(error); console.error("[antigravity] Workspace retention failed:", String(error)) }
   private cleanup(): Promise<void> {
     this.cleaning ??= this.cleanupOnce()
     return this.cleaning
@@ -320,8 +348,23 @@ export class AntigravityRun {
   private async cleanupOnce(): Promise<void> {
     clearTimeout(this.timer); clearTimeout(this.pendingTimer); clearTimeout(this.killTimer)
     this.runtime.runs.delete(this.id)
-    try { if (this.workspace) await rm(this.workspace, { recursive: true, force: true }) }
+    if (this.workspace) {
+      try {
+        const lines = (await readFile(join(this.workspace, 'policy-audit.jsonl'), 'utf8')).split('\n').filter(Boolean)
+        for (const line of lines) {
+          const audit = z.object({ name: z.string().max(200), allowed: z.boolean() }).parse(JSON.parse(line))
+          if (!audit.allowed) this.runtime.recordNative({ runId: this.id, name: audit.name, state: 'denied', timestamp: Date.now() })
+        }
+      } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) console.error('[antigravity] Policy audit read failed:', String(error)) }
+    }
+    let retained = false
+    if (this.completedSnapshot && this.workspace && this.conversationId && this.runtime.nativeSessions?.eligible({ ...this.request, messages: this.history })) {
+      try { this.runtime.nativeSessions.save(this.request, this.history, { conversationId: this.conversationId, workspace: this.workspace, count: this.history.length }); retained = true }
+      catch (error) { console.error('[antigravity] Native resume snapshot failed:', String(error)) }
+    }
+    try { if (this.workspace && !retained) await rm(this.workspace, { recursive: true, force: true }) }
     catch (error) { console.error("[antigravity] Temporary workspace cleanup failed:", String(error)) }
+    if (this.workspace) try { this.runtime.nativeSessions?.release(this.workspace) } catch (error) { this.stateFailure(error) }
     this.settledResolve()
   }
 }
@@ -333,15 +376,22 @@ export class AntigravityRuntime {
   readonly maxConcurrent: number
   readonly childEnv: NodeJS.ProcessEnv
   // Warm live conversations; expired or restarted processes replay client history.
+  readonly plugins: AgPlugins
+  readonly state?: AgState
+  readonly nativeSessions?: AgNativeSessions
+  restored = 0
+  stateError?: string
   readonly runs = new Map<string, AntigravityRun>()
   readonly toolOwners = new Map<string, AntigravityRun>()
   // Bounded duplicate protection, not a durable or exactly-once execution ledger.
   private readonly consumedTools = new Set<string>()
   readonly recoveringTools = new Set<string>()
-  hasConsumedTool(id: string): boolean { return this.consumedTools.has(createHash("sha256").update(id).digest("hex")) }
+  hasConsumedTool(id: string): boolean { const key = createHash("sha256").update(id).digest("hex"); return this.consumedTools.has(key) || !!this.state?.get("consumed-tools", key, "") }
   rememberConsumedTool(id: string): void {
     // Recovered IDs are client-supplied; retain fixed-size digests, never large strings.
-    this.consumedTools.add(createHash("sha256").update(id).digest("hex"))
+    const key = createHash("sha256").update(id).digest("hex")
+    this.state?.put("consumed-tools", key, "", "true", Date.now() + 30 * 60_000, 4096, 1024 * 1024)
+    this.consumedTools.add(key)
     if (this.consumedTools.size > 4096) this.consumedTools.delete(this.consumedTools.values().next().value!)
   }
   mcpUrl = ""
@@ -353,7 +403,7 @@ export class AntigravityRuntime {
   failed = 0
   preparing = 0
   readonly nativeActivity: Array<{ runId: string; name: string; state: string; timestamp: number }> = []
-  recordNative(event: { runId: string; name: string; state: string; timestamp: number }): void { this.nativeActivity.unshift(event); this.nativeActivity.length = Math.min(this.nativeActivity.length, 500) }
+  recordNative(event: { runId: string; name: string; state: string; timestamp: number }): void { try { this.state?.put("native", randomUUID(), "", JSON.stringify(event), Date.now() + 30 * 86400000, 500, 1024 * 1024) } catch (error) { this.stateError = String(error) }; this.nativeActivity.unshift(event); this.nativeActivity.length = Math.min(this.nativeActivity.length, 500) }
   readonly requests: AgExchange[] = []
   private readonly activityBuckets = new Map<number, { requests: number; errors: number; inputTokens: number; outputTokens: number; cacheReadTokens: number }>()
   readonly totals = { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 }
@@ -372,15 +422,23 @@ export class AntigravityRuntime {
   private checking?: Promise<string[]>
   private closing?: Promise<void>
   constructor(readonly options: AntigravityOptions = {}) {
+    this.plugins = new AgPlugins(options.plugins, options.pluginPaths)
     this.executable = options.executable ?? "agy"
     this.maxConcurrent = options.maxConcurrent ?? 4
     this.turnTimeoutMs = options.turnTimeoutMs ?? 300_000
     this.pendingToolTimeoutMs = options.pendingToolTimeoutMs ?? 60_000
     for (const value of [this.maxConcurrent, this.turnTimeoutMs, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
+    this.state = options.statePath ? new AgState(options.statePath) : undefined
+    try {
+    this.nativeSessions = this.state && options.statePath ? new AgNativeSessions(this.state, options.statePath, options) : undefined
+    for (const json of this.state?.list('exchanges').reverse() ?? []) this.record(exchangeSchema.parse(JSON.parse(json)), false)
+    for (const json of this.state?.list('native') ?? []) this.nativeActivity.push(nativeSchema.parse(JSON.parse(json)))
+    } catch (error) { this.state?.close(); throw error }
     this.childEnv = { ...process.env }
-    for (const key of Object.keys(this.childEnv)) if (/^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_GENAI_USE_.*|GOOGLE_GEMINI_BASE_URL|ANTHROPIC_.*|MERIDIAN_API_KEY)$/.test(key)) delete this.childEnv[key]
+    for (const key of Object.keys(this.childEnv)) if (/^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_GENAI_USE_.*|GOOGLE_GEMINI_BASE_URL|ANTHROPIC_.*|OPENAI_.*|OPENROUTER_.*|AZURE_OPENAI_.*|MERIDIAN_API_KEY)$/.test(key)) delete this.childEnv[key]
   }
-  record(exchange: AgExchange): void {
+  record(exchange: AgExchange, persist = true): void {
+    if (persist) try { this.state?.put('exchanges', exchange.requestId, '', JSON.stringify(exchange), Date.now() + 30 * 86400000, 10000, 8 * 1024 * 1024) } catch (error) { this.stateError = String(error) }
     this.requests.unshift(exchange)
     this.requests.length = Math.min(this.requests.length, 500)
     const minute = Math.floor(exchange.timestamp / 60000)
@@ -431,15 +489,27 @@ export class AntigravityRuntime {
   private async verifyAccountOnce(): Promise<void> {
     if (process.platform === "win32" && !this.options.allowUnverifiedWindows) throw new Error("Windows Antigravity transport is awaiting authenticated live verification; set antigravity.allowUnverifiedWindows only for the platform acceptance gate")
     const opts = { env: this.childEnv, timeout: 20_000, maxBuffer: 1024 * 1024, signal: this.shutdown.signal }
+    const probe = async (args: string[]) => {
+      try { return await exec(this.executable, args, opts) }
+      catch (error) {
+        const details = error instanceof Error ? error : new Error(String(error))
+        const code = 'code' in details ? String(details.code) : 'unknown'
+        const signal = 'signal' in details ? String(details.signal) : 'none'
+        const killed = 'killed' in details && details.killed === true
+        throw new Error(`Antigravity ${args[0] === '--version' ? 'version' : 'subscription configuration'} check failed (exit=${code}, signal=${signal}, killed=${killed}); no model request was sent`)
+      }
+    }
     const [version, config] = await Promise.all([
-      exec(this.executable, ["--version"], opts),
-      exec(this.executable, ["-p", "/config", "--output-format", "json"], opts),
+      probe(["--version"]),
+      probe(["-p", "/config", "--output-format", "json"]),
     ])
     this.cliVersion = version.stdout.trim()
     // Hooks and stream shapes are security/correctness boundaries. Upgrade only
     // after the actual CLI passes the live gate; never silently trust a new binary.
     if (this.cliVersion !== "1.2.7") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build validates agy 1.2.7. Validate a CLI upgrade before updating the compatibility gate.`)
-    const settings = z.object({ command: z.object({ data: z.object({ config: z.object({ modelProvider: z.unknown().optional(), useG1Credits: z.unknown().optional(), gcp: z.unknown().optional() }) }) }) }).parse(JSON.parse(config.stdout)).command.data.config
+    const settings = z.object({ command: z.object({ data: z.object({ config: z.object({ customModelsConfig: z.unknown().optional(), modelProvider: z.unknown().optional(), useG1Credits: z.unknown().optional(), gcp: z.unknown().optional() }) }) }) }).parse(JSON.parse(config.stdout)).command.data.config
+    const customModels = settings.customModelsConfig
+    if (customModels && (typeof customModels !== "object" || Object.keys(customModels).length > 0)) throw new Error("Antigravity custom model providers must be disabled for subscription-only access")
     if (settings.modelProvider || settings.useG1Credits || settings.gcp) throw new Error("Antigravity requires default account authentication with paid overage credits disabled; configure agy first")
   }
   async availableModels(): Promise<string[]> {
@@ -456,6 +526,7 @@ export class AntigravityRuntime {
   }
   async initialize(): Promise<void> {
     this.initialization ??= (async () => {
+      await this.plugins.init()
       await this.availableModels()
       if (this.options.allowNativeBrowser) {
         try {
@@ -500,7 +571,9 @@ export class AntigravityRuntime {
       if (!(await this.availableModels()).includes(request.model)) throw new AntigravityError("Unknown Antigravity model; use GET /v1/models for account model slugs")
       if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
       if (signal?.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
-      const run = new AntigravityRun(this, request)
+      const restored = this.nativeSessions?.claim(request)
+      const run = new AntigravityRun(this, request, restored)
+      if (restored) this.restored++
       this.runs.set(run.id, run)
       const cancel = () => run.abort(new AntigravityError("Request cancelled", 499, "api_error"))
       signal?.addEventListener("abort", cancel, { once: true })

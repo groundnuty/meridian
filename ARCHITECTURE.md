@@ -21,9 +21,18 @@ generated paths. `antigravityUrl.ts` validates/pins public HTTPS image downloads
 defines the separately opted-in browser/subagent policy; browser MCP uses isolated
 Chrome. `antigravityProcess.ts` contains platform quoting and process termination.
 `antigravityOpenai.ts` validates supported OpenAI subsets before shared translation;
-`antigravityResponses.ts` holds bounded, credential-scoped, process-local Responses
-input/output snapshots for ID continuation, retrieval and deletion; it does not
-restore native CLI sessions or read their transcripts.
+`antigravityOpenaiMedia.ts` preserves original OpenAI attachments while adapting
+them into the common media pipeline. `antigravityResponses.ts` holds bounded,
+credential-scoped Responses snapshots; `antigravityJobs.ts` owns background
+cancellation and bounded event replay. Optional `antigravityState.ts` persists
+Meridian-owned records in private SQLite with an exclusive lifetime owner guard.
+`antigravitySessions.ts` atomically claims exact completed/joined text/client-tool
+native mappings and uses the public CLI conversation flag. In-flight processes
+never enter that durable cache; private CLI transcripts are never read.
+`antigravityPlugins.ts` exposes explicit Antigravity request transforms and isolated
+response/telemetry observers, separate from Claude SDK plugins.
+`antigravityGrammar.ts` validates custom payloads in bounded worker/Python jobs
+before client delivery, never on the HTTP event loop.
 `antigravityTokens.ts` provides explicitly labeled, side-effect-free estimates. `antigravityStops.ts` is a pure incremental text-stop matcher.
 `antigravitySchema.ts` compiles request-local Ajv validators for client tool
 arguments and native structured results. It never fetches remote references or

@@ -43,6 +43,9 @@ Environment variables:
   MERIDIAN_PORT                     Port to listen on (default: 3456)
   MERIDIAN_HOST                     Host to bind to (default: 127.0.0.1)
   MERIDIAN_BACKEND                  claude (default), antigravity, or combined
+  MERIDIAN_AGY_STATE_PATH           Optional bounded persistent state file
+  MERIDIAN_AGY_PLUGIN_PATHS         JSON array of Antigravity plugin modules
+  MERIDIAN_AGY_GRAMMAR_PYTHON       Local Python with Lark for custom grammars
   MERIDIAN_AGY_PATH                 Official agy executable (default: agy)
   MERIDIAN_AGY_ALLOW_TOOL_BRIDGE     Opt into Antigravity client-owned tools (1)
   MERIDIAN_AGY_ALLOW_NATIVE_BROWSER  Opt into native browser actions (1)

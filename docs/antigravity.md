@@ -82,10 +82,13 @@ Matching ordinary turns reuse the same live CLI process and send only new user
 messages. This preserves native conversation/cache affinity while that process
 lives; cache hits and quota savings remain provider-dependent. Exact history,
 model, instructions, tools and output controls must match. Edits, forks after a
-branch advances, compaction, expired processes and restarts use full history
-replay. Schema/stopped responses use fresh processes. Embedders can disable warm
+branch advances, compaction and expired snapshots use full history replay. With
+`MERIDIAN_AGY_STATE_PATH`, completed and joined text/client-tool conversations
+can restore through the official `--conversation` flag after restart. Active work,
+media, native browser/subagents and structured/stopped turns are not eligible. Schema/stopped responses use fresh processes. Embedders can disable warm
 reuse with `antigravity.reuseConversations: false`. Replay is explicit JSON
-context, not native role-preserving transcript import or durable native resume.
+context, not native role-preserving transcript import. Native restore never reads
+or edits private CLI transcripts.
 
 Repeated MCP request IDs reuse their original result within their MCP session;
 conflicting reuse is rejected. Native children have independent MCP sessions. Each
@@ -104,9 +107,10 @@ When capacity is full, Meridian may terminate and join an idle process waiting
 for a client tool, or retaining a completed conversation, before admitting a new request. Active HTTP responses are never
 evicted. This prevents terminal tools that never return a result from occupying
 all slots until their deadlines; a late result follows the same replay path.
-A bounded process-local ledger rejects the latest 4,096 consumed result IDs and
-concurrent recovery of the same result. This is not durable exactly-once delivery:
-after restart or ledger eviction, clients must retain their completed history and
+A bounded ledger rejects the latest 4,096 consumed result IDs and concurrent
+recovery of the same result. With persistent state, those IDs survive restart for
+up to 30 minutes. This is not exactly-once delivery: after expiry or eviction,
+clients must retain their completed history and
 avoid resubmitting already answered requests. The model still decides subsequent
 tool calls; client permissions and side-effect safeguards remain important.
 
@@ -114,7 +118,9 @@ HTTP disconnects during active responses abort that request's process.
 Disconnecting normally after a `tool_use` response leaves its process waiting
 until a result, reclamation, or the tool deadline.
 
-Temporary workspaces are removed after subprocess exit. The official CLI still
+Temporary workspaces are removed after subprocess exit unless retained for an
+eligible completed native snapshot (up to 30 minutes). Expired workspaces are
+pruned on subsequent lifecycle activity; live owner processes are protected. The official CLI still
 persists its own conversations and project metadata under its normal account
 directories. Meridian does not edit or garbage-collect those private records.
 
@@ -123,6 +129,9 @@ directories. Meridian does not edit or garbage-collect those private records.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MERIDIAN_BACKEND` | `claude` | Set to `antigravity` to select Antigravity, or `combined` for both providers |
+| `MERIDIAN_AGY_STATE_PATH` | unset | Private SQLite file for bounded response, activity and completed native continuation state; one live service per path |
+| `MERIDIAN_AGY_PLUGIN_PATHS` | unset | JSON array of explicit Antigravity plugin module paths |
+| `MERIDIAN_AGY_GRAMMAR_PYTHON` | unset | Local Python with Lark installed for Lark custom-tool validation |
 | `MERIDIAN_AGY_PATH` | `agy` | Official CLI executable |
 | `MERIDIAN_AGY_ALLOW_TOOL_BRIDGE` | off | Explicit tool bridge permission opt-in |
 | `MERIDIAN_AGY_ALLOW_NATIVE_BROWSER` | off | Isolated native browser opt-in |
@@ -153,8 +162,8 @@ allowToolBridge, maxConcurrent, turnTimeoutMs, pendingToolTimeoutMs }` on
 - `GET /v1/models`: current account's CLI model slugs.
 - `GET /health`, `/readyz`, `/livez`: backend identity, capability limits and health.
 - Numeric thinking budgets, sampling controls, signed reasoning, Claude-specific
-  profiles/plugins, durable Claude telemetry and durable native resume remain
-  unavailable. Unsupported modeled request features fail before execution.
+  profiles/SDK hooks and signed Claude lineage remain unavailable. Explicit
+  Antigravity provider plugins and bounded persistent activity are supported. Unsupported modeled request features fail before execution.
 - `output_config.effort` accepts `low`, `medium`, or `high` only when it matches
   the selected model slug suffix; it is passed to the native CLI flag. Adaptive
   thinking is accepted, but no private reasoning transcript is synthesized.
@@ -210,15 +219,18 @@ refreshes retain last known readings with stale/error labels. These percentages
 are never added to Anthropic percentages or converted to invented costs.
 
 The activity strip sums observed request and token counts over the past hour.
-Antigravity uses bounded minute buckets; Claude uses its telemetry window. Antigravity activity is process-local, retains the
-latest 500 request metadata records, and resets when Meridian restarts. No
+Antigravity uses bounded minute buckets; Claude uses its telemetry window. Without a state path, Antigravity activity resets on restart. With persistence,
+up to 10,000 request metadata records survive for 30 days; the feed displays the
+latest 500. Native activity retains up to 500 records for 30 days. No
 prompts or tool contents are retained in this activity feed. Subscription quotas
 come from the account and survive proxy restarts.
 
 The macOS app has a Providers page, the same overview and filters, separate
 Antigravity quota windows in the menu bar, and provider selection under Settings.
 For an app-managed service, stop it, choose Claude, Antigravity, or both, then
-start it. Client tools, native browsing and native subagents have separate opt-in checkboxes.
+start it. Client tools, native browsing, native subagents and keeping history
+across restarts have separate opt-in checkboxes. History storage includes response
+content; turning it off stops writes but does not immediately erase existing files.
 The provider card exposes capabilities and their practical limits. An attached service
 is configured by its owner. Sign into Google using the official CLI; the desktop
 app does not collect Google credentials or repurpose Claude profile login.
@@ -448,13 +460,14 @@ Remaining boundaries:
   sampling controls and signed native reasoning are not exposed by this CLI.
 - Native attachment semantics differ from local adaptation: no native PDF
   citations, continuous video understanding, non-speech audio or generated media.
-- Warm native reuse ends on expiry/restart; no durable native session restoration.
-- Durable Responses storage, arbitrary OpenAI tools/formats and universal
-  third-party client compatibility are not implemented.
+- Native restoration covers completed, joined text/client-tool sessions only.
+  Active/background work does not resume after a crash; other contexts replay.
+- Arbitrary provider-hosted OpenAI tools (including OpenAI web search), uploaded
+  file IDs and universal third-party client compatibility are not implemented.
 - Claude profile pools and SDK-specific plugin hooks cannot be applied to the
   Google account. The existing plugin `RequestContext` contains Claude SDK agents,
-  hooks and settings; translating it would require a separate provider-aware
-  contract, not claiming those hooks ran. Global agy customizations still load,
+  hooks and settings; Antigravity instead exposes its own request/response/telemetry extension
+  contract, without claiming those Claude hooks ran. Global agy customizations still load,
   but the bridge does not grant arbitrary plugin MCP tools. Client-owned plugins
   run in Pi/OpenCode as usual. Antigravity uses its CLI's one signed-in account;
   no credential copying or unofficial multi-account isolation is provided.
@@ -483,9 +496,13 @@ Chat Completions and Responses support text, data/HTTPS images, standard functio
 tools and their full-history continuations, forced/parallel tool selection,
 JSON/SSE, matching Gemini effort and JSON schemas. Responses supports either full
 input history or `previous_response_id` with only new input, including function
-results. Custom/namespaced tools and audio/video OpenAI formats remain unsupported.
-Unsupported fields fail before dispatch instead of being silently dropped.
-This surface is not a claim of complete Codex compatibility.
+results. Responses additionally supports namespaced function/freeform tools,
+custom-tool outputs, PDF/text/audio/video base64 data-file inputs and audio input;
+Chat Completions supports WAV/MP3 audio input. Media uses the same local adaptation
+path described below. Optional reasoning-summary/encrypted-content requests do
+not fabricate unavailable native reasoning. Unsupported fields fail before dispatch.
+Actual Codex shell/edit/readback is verified with web search disabled; this is not
+a claim of complete Codex compatibility.
 
 Responses are stored by default; `store: false` disables the response-ID snapshot
 for that turn (it does not disable the separate live CLI conversation). Use
@@ -495,10 +512,13 @@ authentication; snapshots are scoped to the supplied API credential. When no key
 is configured, callers without a credential share the local service scope.
 Combined mode prefixes these routes with `/antigravity`.
 
-Storage is process-local, with a fixed 30-minute lifetime, at most 256 entries,
+Storage has a fixed 30-minute lifetime, at most 256 entries,
 64 MiB of serialized state in total, and 16 MiB per entry. Oldest entries are
 removed under pressure; expired entries are removed on subsequent store access.
-Restart/shutdown clears storage. Missing, expired, deleted, evicted and unstored
+Without a state path, restart/shutdown clears storage. With a state path, terminal
+snapshots survive restart. Limits measure serialized records, not physical SQLite
+file size. The SQLite file is private (0600), and an OS-backed exclusive guard
+prevents concurrent services from owning the same state. Missing, expired, deleted, evicted and unstored
 IDs return 404; clients can recover by resending their complete history. Expanded
 input is limited to 8 MiB before any model call. A response exceeding its storage
 budget fails rather than advertising a retrievable ID. Keep a client-side history
@@ -509,11 +529,21 @@ Only input/output items carry forward through a response ID: resend the desired
 changing instructions or model causes full-history replay. Pending tool results
 still require the matching tool definitions and instruction contract. JSON and
 streaming responses are stored only on successful completion; failed/cancelled
-streams are not published. Deleting an ancestor does not delete already-created
-descendants or cancel native work. Retrieval streaming, input-item listing and
-background responses remain unsupported. These semantics follow the
+foreground streams are not published. Deleting an ancestor does not delete
+already-created descendants. `background: true` requires storage and returns a
+queued response; poll GET, retrieve SSE with `?stream=true&starting_after=N`, list
+`/:id/input_items` with pagination, or POST `/:id/cancel`. Deleting a running
+background response first cancels its owned work. Background reader disconnects
+do not cancel generation. Queued/running work is volatile across restart. There
+are at most 32 background jobs, with bounded event logs; cancellation/failure
+records are process-local and retain the terminal event rather than the prior
+partial event log. Completed foreground JSON retrieval emits item-level
+events, not invented original token deltas. These semantics follow the
 [Responses continuation contract](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
 with the explicit local retention limits above.
+
+`/v1/responses/input_tokens` accepts the supported Responses request shape and
+returns the same explicitly labeled estimate.
 
 `/v1/messages/count_tokens` returns `input_tokens`, `estimated: true`, the
 `x-meridian-token-count: estimate` header and an `estimation` object. It uses
@@ -588,3 +618,26 @@ node scripts/e2e-antigravity-native-tools.mjs
 
 The media fixture also uses macOS `say`; its recorded evidence does not validate
 Linux/Windows preprocessing. See E2E.md for exact successes and retained failures.
+
+
+## Antigravity extensions and custom grammars
+
+Embedders can pass `antigravity.plugins` or `pluginPaths`; CLI users can set
+`MERIDIAN_AGY_PLUGIN_PATHS='["/absolute/plugin.mjs"]'`. Modules default-export an
+object with a unique `name` and optional `onRequest`, `onResponse`, `onTelemetry`.
+Request hooks receive `{provider,request,signal}` and return the Anthropic-shaped
+request, which is revalidated. Response/telemetry observers receive isolated
+copies and cannot rewrite saved responses. Request hooks have a ten-second
+deadline; observers have one second. Failures appear in `/plugins/list`. Hooks
+are trusted operator code, not sandboxed client code; Claude plugins are not
+automatically loaded here.
+
+Responses custom tools accept free text or `{type:"grammar",syntax:"regex"|"lark",
+definition:"..."}`. Validation runs before client delivery and compiles before
+model dispatch. Regex uses whole-string Unicode JavaScript RegExp in a worker
+with a two-second deadline. Lark uses local Python/Lark, the `start` rule and
+Earley parsing with a five-second deadline; imports are limited to individual
+`common` rules. Other regex dialects/import forms are not promised. Up to sixteen
+64-KiB grammars are accepted, with eight validators and a bounded waiting queue.
+Grammar checking validates output; it does not provide native constrained
+sampling or guarantee the model produces a valid payload.

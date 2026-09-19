@@ -36,6 +36,8 @@ const block = z.discriminatedUnion("type", [textBlock, imageBlock, documentBlock
 const message = z.object({ role: z.enum(["user", "assistant"]), content: z.union([z.string(), z.array(block)]) })
 const outputFormat = z.object({ type: z.literal("json_schema"), schema: z.record(z.string(), z.unknown()) }).strict()
 const schema = z.object({
+  meridian_tool_grammars: z.record(z.string(), z.object({ syntax: z.enum(['lark', 'regex']), definition: z.string().max(65536) }).strict()).refine(value => Object.keys(value).length <= 16, 'At most 16 custom grammars').optional(),
+  meridian_session_key: z.string().max(512).optional(),
   model: z.string().min(1).max(200).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/),
   messages: z.array(message).min(1),
   system: z.union([z.string(), z.array(textBlock)]).optional(),
@@ -116,7 +118,7 @@ export function historyKey(messages: AgMessage[]): string {
   return stable(messages.map(m => ({ role: m.role, content: blocks(m) })))
 }
 export function contractKey(request: AgRequest): string {
-  return stable({ model: request.model, system: request.system, tools: request.tools, max_tokens: request.max_tokens, thinking: request.thinking, stop_sequences: request.stop_sequences, output_config: request.output_config })
+  return stable({ session: request.meridian_session_key, grammars: request.meridian_tool_grammars, model: request.model, system: request.system, tools: request.tools, max_tokens: request.max_tokens, thinking: request.thinking, stop_sequences: request.stop_sequences, output_config: request.output_config })
 }
 export function hasAgImages(messages: AgMessage[]): boolean {
   return messages.some(m => blocks(m).some(b => (b.type === "image" || b.type === "document" || b.type === "audio" || b.type === "video") || (b.type === "tool_result" && Array.isArray(b.content) && b.content.some(c => c.type === "image" || c.type === "document" || c.type === "audio" || c.type === "video"))))

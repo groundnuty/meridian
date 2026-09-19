@@ -5343,3 +5343,79 @@ The updated storage disclosure was checked in the collaborative web preview
 and captures the expanded capabilities. Its first harness launch inherited
 `ELECTRON_RUN_AS_NODE` and failed before app startup; running Electron with that
 variable unset exercised the actual app successfully.
+
+### Antigravity durable state and expanded clients (2026-09-19)
+
+After building, run the additional official subscription-CLI gate:
+
+```sh
+MERIDIAN_AGY_GRAMMAR_PYTHON=/path/to/python-with-lark \
+  node scripts/e2e-antigravity-gap-closure.mjs
+node scripts/e2e-antigravity-codex.mjs
+E2E_OPENAI_MEDIA=1 E2E_PYTHON=/path/to/python-with-reportlab \
+  MERIDIAN_AGY_WHISPER_MODEL=/path/to/ggml-base.bin \
+  node scripts/e2e-antigravity-media.mjs
+```
+
+On macOS arm64, Node 22.22.3, official agy 1.2.7, Gemini 3.8 Flash Low:
+
+- `meridian-agy-gap-closure-BROC6X` passed nine checks: durable response IDs and
+  telemetry, exact completed-session native restoration, resumed native file
+  denial, provider extension callbacks, background streaming/pagination/cursors,
+  active CLI cancellation, regex and Lark custom-tool/result round trips, and
+  namespaced function/freeform calls. Lark 1.3.1 ran locally in an isolated Python
+  3.11 environment. The resumed canary never exposed the forbidden file content.
+- `meridian-agy-codex-QZlo7o` passed actual Codex 0.155.1 shell, patch, readback and
+  final receipt. The gate disables Codex web search because its hosted OpenAI
+  tool is not provided by this backend. Codex reports unknown Gemini model
+  metadata and uses fallback metadata; this gate does not prove all Codex modes.
+  Its patch ran through the shell; the separate custom-tool gate proves freeform
+  wire handling.
+- `meridian-agy-media-6AujnN` passed the five media/schema cases through the actual
+  OpenAI Responses route, using local Poppler, Whisper and ffmpeg preprocessing.
+- `meridian-agy-desktop-A0q2rg` used the actual Electron app and a disposable
+  managed combined service. The history checkbox is disabled while running,
+  saves while stopped, creates private persistent state on restart and updates
+  the provider capability disclosure. The visible Settings screenshot was
+  inspected; the service was stopped afterward.
+- `meridian-agy-pi-sIhKIY` passed the complete actual Pi 0.72.1 coding, exact
+  Unicode, saved/forked session, search, steering, compaction and abort gates
+  (23 HTTP requests). Two CLI configuration preflights returned 503 during this
+  run; the client gate recovered, but that does not establish their cause.
+
+Retained failures: `meridian-agy-gap-closure-dIMW42` found the macOS `/var` versus
+`/private/var` workspace mismatch, fixed by canonicalizing the workspace root.
+`hwdO4e` exercised the denial correctly but checked the audit before the warm
+process had joined; the revised gate checks persisted audit after close/reopen.
+Codex probes `ytgbkO` and `Rni9pz` exposed unsupported hosted web search and
+missing input-item metadata handling; web search remains explicitly disabled,
+and the supported metadata shape was added. Desktop `Q983KQ` requested a health
+route not exposed under the combined provider prefix; the corrected harness
+checks the actual provider-status contract. `NggF3V` passed functionality but
+captured a stale occluded frame; the final harness brings Settings forward before
+capturing it.
+
+Regression probe `meridian-agy-expansion-3jb6jI` passed warm reuse, both Chat
+Completions modes and Responses JSON, then received HTTP 503 from the official
+`agy -p /config --output-format json` preflight. A separate read-only probe later
+completed in 2.751 seconds with default subscription authentication, no custom
+providers and paid overage disabled. The original failure lacks exit/signal
+metadata; its cause is unclassified. Successful later gates must not erase it.
+
+The expanded API/parallel rerun `meridian-agy-expansion-YXfmUa` passed all six
+checks, including a real two-call parallel batch with reversed results. This does
+not classify the earlier `/config` failure. Metadata-check errors now include
+exit code, signal and killed status without dumping configuration contents.
+OpenCode 1.18.31 `meridian-agy-opencode-KEQAos` also passed all coding/session/
+client-delegation checks (16 requests).
+
+Focused failure-path tests additionally verify that failed startup releases the
+exclusive state owner and that background cancellation retains a monotonic
+terminal cursor without retaining a potentially oversized duplicate event log.
+
+After the failure-path corrections, `meridian-agy-gap-closure-hdTkwy` repeated all
+nine live checks successfully. The focused gap suite now has 19 passing tests,
+including response input estimates without CLI execution and disabled-reuse
+capability reporting. The complete suite before these final corrections passed
+4,650 tests in 15 isolated groups; final-head full-suite/CI results are recorded
+in the PR.

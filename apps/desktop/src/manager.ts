@@ -88,6 +88,7 @@ export class Manager {
     if (input.backend !== undefined) { if (!['claude', 'antigravity', 'combined'].includes(String(input.backend))) throw new Error('Unknown backend'); result.backend = input.backend as Preferences['backend'] }
     if (typeof input.allowAntigravityTools === 'boolean') result.allowAntigravityTools = input.allowAntigravityTools
     if (typeof input.allowAntigravityBrowser === 'boolean') result.allowAntigravityBrowser = input.allowAntigravityBrowser
+    if (typeof input.persistAntigravityHistory === 'boolean') result.persistAntigravityHistory = input.persistAntigravityHistory
     if (typeof input.allowAntigravitySubagents === 'boolean') result.allowAntigravitySubagents = input.allowAntigravitySubagents
     if (input.endpoint !== undefined) result.endpoint = endpoint(input.endpoint)
     if (input.port !== undefined) result.port = port(input.port)
@@ -112,7 +113,7 @@ export class Manager {
     const input = object(value)
     const next = this.validatePreferences({ ...input, selected: undefined, previous: undefined })
     if (typeof input.apiKey === 'string') next.apiKey = input.apiKey.trim() || undefined
-    const connectionChanged = next.allowAntigravityBrowser !== this.preferences.allowAntigravityBrowser || next.allowAntigravitySubagents !== this.preferences.allowAntigravitySubagents || next.backend !== this.preferences.backend || next.allowAntigravityTools !== this.preferences.allowAntigravityTools || next.mode !== this.preferences.mode || next.port !== this.preferences.port || next.endpoint !== this.preferences.endpoint || next.apiKey !== this.preferences.apiKey
+    const connectionChanged = next.persistAntigravityHistory !== this.preferences.persistAntigravityHistory || next.allowAntigravityBrowser !== this.preferences.allowAntigravityBrowser || next.allowAntigravitySubagents !== this.preferences.allowAntigravitySubagents || next.backend !== this.preferences.backend || next.allowAntigravityTools !== this.preferences.allowAntigravityTools || next.mode !== this.preferences.mode || next.port !== this.preferences.port || next.endpoint !== this.preferences.endpoint || next.apiKey !== this.preferences.apiKey
     if ((this.child || this.adopted) && connectionChanged) throw new Error('Stop the managed service, or return the adopted service to headless, before changing its connection.')
     const previous = this.preferences
     this.preferences = next
@@ -391,7 +392,7 @@ export class Manager {
     this.stopping = false; this.desiredRunning = true
     const child = spawn(this.options.node, ['--import', this.options.runner, entry], {
       cwd: this.adopted?.workingDirectory || homedir(),
-      env: { ...this.environment(), ...this.inheritedEnvironment, ...this.options.serviceEnvironment, MERIDIAN_PORT: String(this.preferences.port), MERIDIAN_HOST: '127.0.0.1', MERIDIAN_API_KEY: this.preferences.apiKey || '', MERIDIAN_SHUTDOWN_GRACE_MS: '30000', ...(this.preferences.backend ? { MERIDIAN_BACKEND: this.preferences.backend } : {}), ...(this.preferences.allowAntigravityTools !== undefined ? { MERIDIAN_AGY_ALLOW_TOOL_BRIDGE: this.preferences.allowAntigravityTools ? '1' : '0' } : {}), ...(this.preferences.allowAntigravityBrowser !== undefined ? { MERIDIAN_AGY_ALLOW_NATIVE_BROWSER: this.preferences.allowAntigravityBrowser ? '1' : '0' } : {}), ...(this.preferences.allowAntigravitySubagents !== undefined ? { MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS: this.preferences.allowAntigravitySubagents ? '1' : '0' } : {}) },
+      env: { ...this.environment(), ...this.inheritedEnvironment, ...this.options.serviceEnvironment, MERIDIAN_PORT: String(this.preferences.port), MERIDIAN_HOST: '127.0.0.1', MERIDIAN_API_KEY: this.preferences.apiKey || '', MERIDIAN_SHUTDOWN_GRACE_MS: '30000', ...(this.preferences.persistAntigravityHistory !== undefined ? { MERIDIAN_AGY_STATE_PATH: this.preferences.persistAntigravityHistory ? join(this.options.directory, 'antigravity.sqlite') : '' } : {}), ...(this.preferences.backend ? { MERIDIAN_BACKEND: this.preferences.backend } : {}), ...(this.preferences.allowAntigravityTools !== undefined ? { MERIDIAN_AGY_ALLOW_TOOL_BRIDGE: this.preferences.allowAntigravityTools ? '1' : '0' } : {}), ...(this.preferences.allowAntigravityBrowser !== undefined ? { MERIDIAN_AGY_ALLOW_NATIVE_BROWSER: this.preferences.allowAntigravityBrowser ? '1' : '0' } : {}), ...(this.preferences.allowAntigravitySubagents !== undefined ? { MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS: this.preferences.allowAntigravitySubagents ? '1' : '0' } : {}) },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     })
     this.child = child

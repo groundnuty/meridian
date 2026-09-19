@@ -10,7 +10,7 @@ import { createImageFixture } from './lib-antigravity-image-checks.mjs'
 const root = await mkdtemp(join(tmpdir(), 'meridian-agy-media-'))
 console.log(`Artifacts: ${root}`)
 const model = process.env.E2E_AGY_MODEL || 'gemini-3.8-flash-low'
-const report = { model, platform: process.platform, node: process.version, passed: [] }
+const report = { model, route: process.env.E2E_OPENAI_MEDIA === '1' ? 'responses' : 'messages', platform: process.platform, node: process.version, passed: [] }
 const command = (bin, args) => { const result = spawnSync(bin, args, { encoding: 'utf8', timeout: 90000 }); assert.equal(result.status, 0, result.stderr); return result.stdout }
 let proxy
 try {
@@ -18,11 +18,21 @@ try {
   if (!proxy.server.listening) await once(proxy.server, 'listening')
   const url = `http://127.0.0.1:${proxy.server.address().port}`
   const send = async (name, content, expected, extra = {}) => {
-    const response = await fetch(url + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content }], ...extra }), signal: AbortSignal.timeout(180000) })
+    const openai = process.env.E2E_OPENAI_MEDIA === '1'
+    const parts = typeof content === 'string' ? content : content.map(block => {
+      if (block.type === 'text') return { type: 'input_text', text: block.text }
+      const source = block.source
+      if (block.type === 'image') return { type: 'input_image', image_url: source.type === 'url' ? source.url : `data:${source.media_type};base64,${source.data}` }
+      if (block.type === 'audio') return { type: 'input_audio', input_audio: { data: source.data, format: 'wav' } }
+      return { type: 'input_file', filename: block.title || 'attachment', file_data: `data:${source.media_type};base64,${source.data}` }
+    })
+    const body = openai ? { model, input: [{ role: 'user', content: parts }], ...(extra.output_config ? { text: { format: { type: 'json_schema', name: 'receipt', schema: extra.output_config.format.schema } } } : {}) } : { model, messages: [{ role: 'user', content }], ...extra }
+    const response = await fetch(url + (openai ? '/v1/responses' : '/v1/messages'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(180000) })
     const answer = await response.json()
     await writeFile(join(root, name + '.json'), JSON.stringify({ status: response.status, answer }, null, 2))
     assert.equal(response.status, 200, JSON.stringify(answer))
-    assert(answer.content.filter(block => block.type === "text").map(block => block.text).join("").toLowerCase().includes(expected.toLowerCase()), JSON.stringify(answer))
+    const output = openai ? answer.output.filter(item => item.type === "message").flatMap(item => item.content).map(part => part.text).join("") : answer.content.filter(block => block.type === "text").map(block => block.text).join("")
+    assert(output.toLowerCase().includes(expected.toLowerCase()), JSON.stringify(answer))
     report.passed.push(name); console.log('PASS', name)
   }
   const code = 'PDF_' + randomUUID().slice(0, 8).toUpperCase()

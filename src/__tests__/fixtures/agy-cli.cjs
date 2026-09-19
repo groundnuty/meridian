@@ -11,7 +11,8 @@ async function main(inputPrompt) {
   let prompt = args[args.indexOf('-p') + 1]
   if (inputPrompt !== undefined) prompt = inputPrompt
   nativePrompts.push(prompt)
-  if (prompt === '/config') return emit({ command: { data: { config: { modelProvider: process.env.AGY_FIXTURE_API ? 'gemini' : '', useG1Credits: false } } } })
+  if (prompt === '/config' && process.env.AGY_FIXTURE_CONFIG_EXIT) return process.exit(2)
+  if (prompt === '/config') return emit({ command: { data: { config: { customModelsConfig: process.env.AGY_FIXTURE_CUSTOM ? { fixture: {} } : {}, modelProvider: process.env.AGY_FIXTURE_API ? 'gemini' : '', useG1Credits: false } } } })
   if (prompt === '/usage') return emit({command:{data:{groups:[{name:'Gemini Models',buckets:[{id:'gemini-5h',window:'5h',remaining_fraction:0.75,reset_time:'2099-01-01T00:00:00Z'}]}]}}})
   if (prompt.includes('POLICY_PROBE')) {
     const check = (input, decision) => {

@@ -1,3 +1,4 @@
+import { AgResponseJobs, agEventStream, responseEvents } from "./antigravityJobs"
 import { estimateAgTokens } from "./antigravityTokens"
 import { agOpenai } from "./antigravityOpenai"
 import { AgResponseStore, agResponseScope } from "./antigravityResponses"
@@ -36,7 +37,8 @@ async function readBody(request: Request): Promise<unknown> {
 
 export function createAntigravityServer(config: ProxyConfig, runtime = new AntigravityRuntime({ ...config.antigravity, maxConcurrent: config.antigravity?.maxConcurrent ?? config.maxConcurrent })): ProxyServer & { closeBackend(): Promise<void>; providerStatus(): Promise<ProviderUsage> } {
   if (config.profiles?.length || config.defaultProfile) throw new Error("Antigravity does not support Claude profile configuration")
-  const responses = new AgResponseStore()
+  const responses = new AgResponseStore(undefined, undefined, runtime.state)
+  const responseJobs = new AgResponseJobs(responses)
   async function selectRun(body: AgRequest, signal: AbortSignal): Promise<AntigravityRun> {
     // Clients may append steering as text in the result message or as another
     // user message. Match the delivered assistant prefix before accepting either.
@@ -87,7 +89,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
   async function messages(request: Request): Promise<Response> {
     if (runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (request.headers.has("x-meridian-profile")) throw new AntigravityError("Antigravity uses the current agy account; Claude profile routing is unavailable")
-    const body = parseAgRequest(await readBody(request))
+    const body = parseAgRequest(await runtime.plugins.request(await readBody(request), request.signal))
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
     const run = await selectRun(body, request.signal)
     let completed = false
@@ -150,7 +152,8 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           break
         }
         if (forcedAgTool(body) && reason !== "tool_use") throw new AntigravityError("Antigravity completed without the required tool call", 502, "api_error")
-        if (reason === "end_turn") run.history = [...run.history, { role: "assistant", content }]
+        if (reason === "end_turn") { run.history = [...run.history, { role: "assistant", content }]; run.rememberCompleted() }
+        await runtime.plugins.observe("onResponse", { ...base, content, stop_reason: reason, usage }, request.signal)
         emit?.("message_delta", { type: "message_delta", delta: { stop_reason: reason, stop_sequence: stops.matched ?? null }, usage })
         emit?.("message_stop", { type: "message_stop" })
         return { ...base, content, stop_reason: reason, stop_sequence: stops.matched ?? null, usage }
@@ -160,7 +163,9 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         run.abort(error instanceof Error ? error : new Error(String(error)))
         throw error
       } finally {
-        runtime.record({ requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens })
+        const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens }
+        runtime.record(metric)
+        await runtime.plugins.observe("onTelemetry", metric, request.signal)
         completed = true
         run.busy = false
         request.signal.removeEventListener("abort", cancel)
@@ -201,11 +206,11 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     const { quota, models, error, loading } = runtime.providerFacts()
     return { id: 'antigravity', name: 'Antigravity', enabled: true, status: runtime.draining ? 'draining' : error ? 'unavailable' : loading ? 'loading' : 'healthy', endpoint: config.backend === 'combined' ? '/antigravity/v1/messages' : '/v1/messages', error, models,
       capabilities: [
-        { name: 'Conversation reuse', status: runtime.options.reuseConversations === false ? 'Disabled' : 'Available', detail: 'Exact continuations reuse a live CLI conversation. Edits, expired sessions and restarts replay history; cache hits depend on the provider.' },
+        { name: 'Conversation reuse', status: runtime.options.reuseConversations === false ? 'Disabled' : 'Available', detail: 'Exact continuations reuse a live CLI conversation. ' + (runtime.nativeSessions ? 'Completed text and client-tool sessions can restore after restart. ' : 'Restarts replay history. ') + 'Edits, expired sessions and ineligible native contexts replay history; cache hits depend on the provider.' },
         { name: 'Client tools', status: runtime.options.allowToolBridge ? 'Available' : 'Disabled', detail: 'Parallel batches, exact result correlation and client-side approval. Native actions have separate operator controls.' },
         { name: 'Native browser', status: runtime.options.allowNativeBrowser ? 'Operator enabled' : 'Disabled', detail: 'Isolated Chrome via Chrome DevTools MCP 1.9.0; requires both installed locally. Native actions bypass client approval dialogs.' },
         { name: 'Native subagents', status: runtime.options.allowNativeSubagents ? 'Operator enabled' : 'Disabled', detail: 'Self/research agents inherit the guarded workspace and enabled client tools. Browser delegation requires its separate grant.' },
-        { name: 'OpenAI clients', status: 'Available', detail: 'Chat Completions and Responses with text, images, function tools, JSON and streaming. Response IDs can continue recent stored turns; storage is local, bounded and expires after 30 minutes.' },
+        { name: 'OpenAI clients', status: 'Available', detail: 'Chat Completions and Responses with adapted media, namespaced/custom tools, JSON and streaming. Background Responses support polling and cancellation. Response IDs can continue recent stored turns; storage is bounded to 30 minutes. ' + (runtime.state ? 'Snapshots survive restarts.' : 'Snapshots clear on restart; set MERIDIAN_AGY_STATE_PATH for persistence.') + '' },
         { name: 'Documents and media', status: 'Local dependencies', detail: 'PDF pages use Poppler. Audio uses local Whisper; video uses sampled frames and a transcript. These are adapted inputs, not native multimodal understanding.' },
         { name: 'Token controls', status: 'Limited', detail: 'Token counts are estimates; output budgets are advisory. Exact token caps, numeric thinking budgets, sampling controls and native reasoning blocks are unavailable.' },
       ],
@@ -226,27 +231,58 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       if (request.method === 'GET' && path === '/telemetry/summary') return Response.json({ totalRequests: runtime.totals.requests, errorCount: runtime.totals.errors, tokenUsage: { totalInputTokens: runtime.totals.inputTokens, totalOutputTokens: runtime.totals.outputTokens, totalCacheReadTokens: runtime.totals.cacheReadTokens } })
       if (request.method === 'GET' && path === '/v1/usage/quota/all') return Response.json({ profiles: [{ id: 'agy-account', ...runtime.providerFacts().quota }] })
       if (request.method === 'GET' && path === '/profiles/list') return Response.json({ profiles: [{ id: 'agy-account', type: 'Antigravity', isActive: true }], activeProfile: 'agy-account' })
-      if (request.method === 'GET' && ['/telemetry/logs', '/plugins/list'].includes(path)) return Response.json([])
+      if (request.method === 'GET' && path === '/plugins/list') { await runtime.plugins.init(); return Response.json(runtime.plugins.list()) }
+      if (request.method === 'GET' && path === '/telemetry/logs') return Response.json([])
       if (request.method === 'GET' && path === '/settings/api/features') return Response.json({})
       if (request.method === "GET" && path === "/livez") return Response.json({ status: "alive" })
       if (request.method === "GET" && ["/health", "/readyz"].includes(path)) {
         if (runtime.draining) return Response.json({ status: "draining" }, { status: 503 })
         await runtime.initialize()
         await runtime.verifyAccount()
-        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, urlImages: !!runtime.options.allowToolBridge, documents: "local-poppler", audio: "local-whisper", video: "local-frames-and-transcript", nativeReasoning: false, nativeBrowser: !!runtime.options.allowNativeBrowser, nativeSubagents: !!runtime.options.allowNativeSubagents, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: false, conversationReuse: runtime.options.reuseConversations !== false ? "live-process" : false, parallelTools: true, tokenCounting: "estimate", openai: ["chat-completions", "responses"], responseStorage: "process-local-30m-bounded", toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory" }, processes: runtime.runs.size, activeProcesses: [...runtime.runs.values()].filter(run => run.active).length, pendingToolProcesses: [...runtime.runs.values()].filter(run => run.delivered.length > 0).length, preparing: runtime.preparing, reclaimed: runtime.reclaimed, reused: runtime.reused, completed: runtime.completed, failed: runtime.failed })
+        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, urlImages: !!runtime.options.allowToolBridge, documents: "local-poppler", audio: "local-whisper", video: "local-frames-and-transcript", nativeReasoning: false, nativeBrowser: !!runtime.options.allowNativeBrowser, nativeSubagents: !!runtime.options.allowNativeSubagents, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: runtime.nativeSessions && runtime.options.reuseConversations !== false ? "completed-text-and-client-tools" : false, conversationReuse: runtime.options.reuseConversations !== false ? "live-process" : false, parallelTools: true, tokenCounting: "estimate", openai: ["chat-completions", "responses"], responseStorage: runtime.state ? "durable-30m-bounded" : "process-local-30m-bounded", toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory" }, processes: runtime.runs.size, activeProcesses: [...runtime.runs.values()].filter(run => run.active).length, pendingToolProcesses: [...runtime.runs.values()].filter(run => run.delivered.length > 0).length, stateError: runtime.stateError, preparing: runtime.preparing, reclaimed: runtime.reclaimed, reused: runtime.reused, restored: runtime.restored, completed: runtime.completed, failed: runtime.failed })
       }
       if (request.method === "GET" && path === "/v1/models") {
         const models = await runtime.availableModels()
         return Response.json({ object: "list", data: models.map(id => ({ id, type: "model", object: "model", display_name: id, owned_by: "antigravity" })), has_more: false, first_id: models[0], last_id: models.at(-1) })
       }
       if (request.method === "POST" && path === "/v1/messages/count_tokens") return Response.json(estimateAgTokens(parseAgRequest(await readBody(request))), { headers: { "x-meridian-token-count": "estimate" } })
-      const storedResponse = /^\/v1\/responses\/(resp_agy_[a-f0-9]{32})$/.exec(path)
-      if (storedResponse && ['GET', 'DELETE'].includes(request.method)) {
-        if (new URL(request.url).search) throw new AntigravityError('Stored response query options are not supported')
+      if (request.method === "POST" && path === "/v1/responses/input_tokens") return await agOpenai(request, await readBody(request), true, messages, responses, responseJobs, { countTokens: true })
+      const storedResponse = /^\/v1\/responses\/(resp_agy_[a-f0-9]{32})(?:\/(input_items|cancel))?$/.exec(path)
+      if (storedResponse) {
+        const id = storedResponse[1]!, operation = storedResponse[2]
         const scope = agResponseScope(request.headers)
-        return Response.json(request.method === 'DELETE' ? responses.delete(storedResponse[1]!, scope) : responses.get(storedResponse[1]!, scope).response, { headers: { 'cache-control': 'no-store' } })
+        const params = new URL(request.url).searchParams
+        if (request.method === 'POST' && operation === 'cancel') return Response.json(await responseJobs.cancel(id, scope))
+        if (request.method === 'DELETE' && !operation) {
+          const current = responses.get(id, scope)
+          if (current.response.background === true) await responseJobs.cancel(id, scope)
+          return Response.json(responses.delete(id, scope))
+        }
+        if (request.method === 'GET') {
+          const current = responses.get(id, scope)
+          if (operation === 'input_items') {
+            if ([...params.keys()].some(key => !['limit', 'order', 'after', 'before'].includes(key))) throw new AntigravityError('Unsupported input_items query option')
+            const limit = Number(params.get('limit') ?? 20), order = params.get('order') ?? 'desc'
+            if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !['asc', 'desc'].includes(order)) throw new AntigravityError('Invalid input_items limit/order')
+            let items = current.input.map((value, index) => ({ ...Object(value), id: typeof Object(value).id === 'string' ? String(Object(value).id) : `item_${id}_${index}`, type: Object(value).type ?? 'message' }))
+            if (order === 'desc') items.reverse()
+            for (const direction of ['after', 'before']) {
+              const cursor = params.get(direction)
+              if (cursor) { const index = items.findIndex(item => item.id === cursor); if (index < 0) throw new AntigravityError('Unknown input_items cursor'); items = direction === 'after' ? items.slice(index + 1) : items.slice(0, index) }
+            }
+            const data = items.slice(0, limit)
+            return Response.json({ object: 'list', data, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null, has_more: items.length > limit }, { headers: { 'cache-control': 'no-store' } })
+          }
+          if (operation) throw new AntigravityError('Unsupported response operation')
+          if ([...params.keys()].some(key => !['stream', 'starting_after'].includes(key))) throw new AntigravityError('Unsupported response query option')
+          if (params.has('stream') && !['true', 'false'].includes(params.get('stream')!)) throw new AntigravityError('stream must be true or false')
+          const after = Number(params.get('starting_after') ?? -1)
+          if (!Number.isInteger(after) || after < -1 || (params.has('starting_after') && params.get('stream') !== 'true')) throw new AntigravityError('starting_after requires stream=true and an integer cursor')
+          if (params.get('stream') === 'true') return current.response.background === true ? responseJobs.stream(id, scope, after, request.signal) : agEventStream(current.events ?? responseEvents(current.response), after)
+          return Response.json(current.response, { headers: { 'cache-control': 'no-store' } })
+        }
       }
-      if (request.method === "POST" && ["/v1/chat/completions", "/v1/responses"].includes(path)) return await agOpenai(request, await readBody(request), path === "/v1/responses", messages, responses)
+      if (request.method === "POST" && ["/v1/chat/completions", "/v1/responses"].includes(path)) return await agOpenai(request, await readBody(request), path === "/v1/responses", messages, responses, responseJobs)
       if (request.method === "POST" && ["/v1/messages", "/messages"].includes(path)) return await messages(request)
       return errorResponse(new AntigravityError("Endpoint unavailable on the Antigravity backend", 404, "not_found_error"))
     } catch (error) { return errorResponse(error) }
@@ -257,6 +293,6 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     beginDrain: () => { runtime.draining = true },
     forceAbortInFlight: () => { for (const run of runtime.runs.values()) run.abort(new Error("Backend shutting down")) },
     getInFlightCount: () => [...runtime.runs.values()].filter(run => run.active).length,
-    closeBackend: async () => { try { await runtime.close() } finally { responses.clear() } },
+    closeBackend: async () => { try { await responseJobs.close(); await runtime.close() } finally { responses.clear(); runtime.state?.close() } },
   }
 }

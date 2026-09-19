@@ -52,7 +52,7 @@ async function installed(directory: string, release: string, broken = false) {
           return res.end(JSON.stringify({fetchedAt:Date.now(),providers:[{id:'antigravity',name:'Antigravity',enabled:true,status:'healthy',endpoint:'/antigravity/v1/messages',activity:{requests:1,errors:0,inputTokens:10,outputTokens:2,cacheReadTokens:0},accounts:[{id:'Google account',fetchedAt:Date.now(),windows:[{type:'5h',utilization:.25,resetsAt:Date.now()+60000}]}]}]}));
         }
         if (process.env.MERIDIAN_BACKEND === 'antigravity' && ['/telemetry/routes', '/telemetry/retention'].includes(req.url)) { res.statusCode=404; return res.end('{}'); }
-        if (req.url === '/backend') return res.end(JSON.stringify({backend:process.env.MERIDIAN_BACKEND, tools:process.env.MERIDIAN_AGY_ALLOW_TOOL_BRIDGE,browser:process.env.MERIDIAN_AGY_ALLOW_NATIVE_BROWSER,subagents:process.env.MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS}));
+        if (req.url === '/backend') return res.end(JSON.stringify({backend:process.env.MERIDIAN_BACKEND, tools:process.env.MERIDIAN_AGY_ALLOW_TOOL_BRIDGE,browser:process.env.MERIDIAN_AGY_ALLOW_NATIVE_BROWSER,subagents:process.env.MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS,statePath:process.env.MERIDIAN_AGY_STATE_PATH}));
         if (req.url === '/crash') return process.exit(19);
         if (req.url === '/slow') return setTimeout(() => res.end(JSON.stringify({ done:true })), 250);
         res.end(JSON.stringify({}));
@@ -67,10 +67,11 @@ describe('desktop manager real child lifecycle', () => {
   test('provider settings persist, reach the owned process, and require stop before changes', async () => {
     const { manager, directory } = await fixture()
     await installed(directory, '1.0.0'); await manager.inventory()
-    await manager.configure({ backend: 'combined', allowAntigravityTools: true, allowAntigravityBrowser: true, allowAntigravitySubagents: false })
+    await manager.configure({ backend: 'combined', allowAntigravityTools: true, allowAntigravityBrowser: true, allowAntigravitySubagents: false, persistAntigravityHistory: true })
     manager.preferences.selected = '1.0.0'
     await manager.start()
-    expect(await manager.api('/backend')).toEqual({backend:'combined',tools:'1',browser:'1',subagents:'0'})
+    expect(await manager.api('/backend')).toEqual({backend:'combined',tools:'1',browser:'1',subagents:'0',statePath:join(directory,'antigravity.sqlite')})
+    await expect(manager.configure({persistAntigravityHistory:false})).rejects.toThrow('Stop the managed service')
     await expect(manager.configure({backend:'antigravity'})).rejects.toThrow('Stop the managed service')
     await manager.stop()
     await manager.configure({backend:'antigravity',allowAntigravityTools:false})
