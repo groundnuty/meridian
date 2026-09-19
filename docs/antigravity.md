@@ -68,7 +68,9 @@ responsibility.
 Pending tool calls retain a live `agy` process. Each continuation must preserve
 the delivered conversation prefix, model, system instructions, tool catalog and
 output budget. The result must correspond to the exact delivered tool ID.
-Changed, duplicate, unknown and expired results receive HTTP 409. A batch of
+Changed, duplicate, unknown and expired results receive HTTP 409. New user text
+may accompany the exact result or follow it in another user message. This steering
+continues the same pending process and is delivered separately from tool output. A batch of
 upstream calls is exposed as one client call per HTTP response, retaining all
 upstream correlations. A result cannot silently move to a different account.
 
@@ -119,10 +121,16 @@ allowToolBridge, maxConcurrent, turnTimeoutMs, pendingToolTimeoutMs }` on
 - `POST /v1/messages` and `/messages`: text, text tool results, JSON and SSE.
 - `GET /v1/models`: current account's CLI model slugs.
 - `GET /health`, `/readyz`, `/livez`: backend identity, capability limits and health.
-- Images, thinking controls other than `disabled`, forced tool choice, sampling
+- Images, numeric thinking budgets, forced tool choice, sampling
   controls, structured-output contracts, stop sequences, OpenAI routes, Claude
   profiles, plugins, the full Claude telemetry dashboard and native persistent resume are not
   implemented. Unsupported modeled request features fail before execution.
+- `output_config.effort` accepts `low`, `medium`, or `high` only when it matches
+  the selected model slug suffix; it is passed to the native CLI flag. Adaptive
+  thinking is accepted, but no private reasoning transcript is synthesized.
+  Google-hosted Claude does not support this effort override: select its account
+  model as advertised, with client thinking controls off. Gemini effort variants
+  can always be selected as separate model slugs.
 - `max_tokens` is included as a prompt instruction; the CLI does not expose a
   native hard output-token cap. Health reports this as `advisory`.
 - CLI permission denial is an error even when the CLI's terminal status says
@@ -226,3 +234,97 @@ stops the owned service. It consumes both accounts' model quota.
 CLI behavior references: [headless mode](https://antigravity.google/docs/cli/headless/),
 [hooks](https://antigravity.google/docs/hooks), and
 [terminal sandbox](https://antigravity.google/docs/sandbox?tab=cli).
+
+## Pi and OpenCode
+
+Both clients use their own tools, permissions and saved sessions. Meridian does
+not replace their tool implementations. Completed-turn resume, forks, undo and
+compaction use the history supplied by the client; native agy persistent resume
+is still unavailable. Client-owned delegation (for example OpenCode's `task`)
+is allowed through MCP; Antigravity's built-in delegation remains denied.
+
+These examples use standalone Antigravity on port 3457. For a combined service,
+use its port and prepend `/antigravity` to each base URL. If Meridian API-key
+protection is configured, replace `local-placeholder` with that local key.
+
+Pi's `~/.pi/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "meridian-agy": {
+      "api": "anthropic-messages",
+      "baseUrl": "http://127.0.0.1:3457",
+      "apiKey": "local-placeholder",
+      "models": [{
+        "id": "gemini-3.8-flash-low",
+        "name": "Antigravity Gemini Flash Low",
+        "reasoning": false,
+        "input": ["text"],
+        "contextWindow": 128000,
+        "maxTokens": 4096
+      }]
+    }
+  }
+}
+```
+
+Run `pi --provider meridian-agy --model gemini-3.8-flash-low --thinking off`.
+Pi enables read/edit/bash/write by default. To enable its search tools too, add
+`--tools read,edit,bash,write,grep,find,ls`. Add other account model slugs as
+separate entries (including Gemini medium/high variants). `reasoning: false`
+disables unsupported client thinking-budget controls; it does not disable a
+model's intrinsic reasoning. The context/output settings above are conservative
+client budgets, not claims about native hard limits.
+
+OpenCode's `opencode.json` (merge the provider into existing configuration):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "meridian-agy": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "Antigravity through Meridian",
+      "options": {
+        "baseURL": "http://127.0.0.1:3457/v1",
+        "apiKey": "local-placeholder"
+      },
+      "models": {
+        "gemini-3.8-flash-low": {
+          "name": "Antigravity Gemini Flash Low",
+          "limit": { "context": 128000, "output": 4096 },
+          "temperature": false,
+          "reasoning": false,
+          "tool_call": true,
+          "modalities": { "input": ["text"], "output": ["text"] }
+        }
+      }
+    }
+  }
+}
+```
+
+Select `meridian-agy/gemini-3.8-flash-low`. Leave permission choices with the
+client; there is no need to globally auto-approve OpenCode tools. Use a configured
+Antigravity model for `small_model` as well if title/compaction helper work should
+stay on that subscription. This custom provider does not need the Claude-specific
+Meridian OpenCode plugin.
+
+For a matching Gemini high model entry, OpenCode model `options` may specify
+`{"thinking":{"type":"adaptive"},"effort":"high"}`. Do not apply these options
+to low/medium variants or Google-hosted Claude models.
+
+The actual-client gates are:
+
+```sh
+npm run build
+E2E_CLIENT=pi node scripts/e2e-antigravity-clients.mjs
+E2E_CLIENT=opencode E2E_AGY_EFFORT_MODEL=gemini-3.8-flash-high node scripts/e2e-antigravity-clients.mjs
+node scripts/e2e-antigravity-opencode-session.mjs
+```
+
+They consume subscription quota and retain local fixture artifacts. See
+[E2E.md](../E2E.md#antigravity-coding-tool-acceptance-gate) for verified versions,
+individual outcomes and retained failures. They establish the listed coding
+flows, not image support, every third-party extension, or hard token budgets.

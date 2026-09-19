@@ -6,7 +6,7 @@ const args = process.argv.slice(2)
 const emit = value => process.stdout.write(JSON.stringify(value) + '\n')
 async function main() {
   if (args[0] === '--version') return console.log(process.env.AGY_FIXTURE_VERSION || '1.2.7')
-  if (args[0] === 'models') return console.log('fixture-model\tFixture Model')
+  if (args[0] === 'models') return console.log('fixture-model\tFixture Model\nfixture-model-high\tFixture High')
   let prompt = args[args.indexOf('-p') + 1]
   if (args.includes('--input-format')) {
     let input = ''; for await (const chunk of process.stdin) input += chunk
@@ -26,6 +26,7 @@ async function main() {
     check('invalid JSON', 'deny')
     check({toolCall:{name:'call_mcp_tool',args:{ServerName:'meridian_client',ToolName:'lookup'}}}, 'allow')
   }
+  if (prompt.includes('EFFORT_PROBE') && args[args.indexOf('--effort') + 1] !== 'high') throw new Error('Native effort flag missing')
   emit({ event: 'init' })
   if (prompt.includes('RATE_LIMIT')) return emit({event:'result',result:{status:'ERROR',error:'Quota exhausted; retry in 45 seconds'}})
   if (prompt.includes('HANG')) { setInterval(() => {}, 1000); return }
@@ -64,7 +65,10 @@ async function main() {
     const calls = Array.from({ length: prompt.includes('PARALLEL2') ? 2 : 1 }, (_, n) => rpc('tools/call', { name: tools[0].name, arguments: { key: `probe${n}` } }))
     if (prompt.includes('RPC_RETRY')) calls.push(rpc('tools/call', {name:tools[0].name,arguments:{key:'probe0'}},2))
     const results = await Promise.all(calls)
-    answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).meridian_client_result)).join('|')
+    if (prompt.includes('STEERING')) {
+      const followup = JSON.parse(results[0].content[0].text).meridian_client_followup
+      answer = JSON.stringify(followup)
+    } else answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).meridian_client_result)).join('|')
   }
   emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: answer } })
   emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 120, output_tokens: 10, cache_read_tokens: 20 } } })

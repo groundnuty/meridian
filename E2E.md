@@ -114,6 +114,63 @@ Unicode paths/content, while the regression forces the otherwise nondeterministi
 network split. This evidence covers this model/client/platform, not every client
 or pending-tool recovery after process death.
 
+### Pi and OpenCode client/session acceptance
+
+```sh
+npm run build
+E2E_CLIENT=pi node scripts/e2e-antigravity-clients.mjs
+E2E_CLIENT=opencode E2E_AGY_EFFORT_MODEL=gemini-3.8-flash-high node scripts/e2e-antigravity-clients.mjs
+node scripts/e2e-antigravity-opencode-session.mjs
+```
+
+These gates use actual installed clients with isolated client configuration and
+saved sessions. They exercise client-owned tools against the real account-backed
+CLI, not fixture model responses. The coding task requires read-error recovery,
+an exact source edit, execution, a Unicode output file, and client-side byte
+verification/repair before the external byte-for-byte assertion. Both clients
+then continue and fork saved sessions and use their search tools. OpenCode also
+uses its `task` tool to invoke a real client-owned subagent; the high-effort probe
+uses the matching Gemini high variant. Pi's RPC mode checks steering while a
+bash tool runs, compaction, cancellation and the next prompt. A separate actual
+OpenCode server checks undo, compaction, cancellation and continued prompting.
+
+**Verified 2026-09-18:** macOS arm64, Node 22.22.3, agy 1.2.7,
+Pi 0.72.1, OpenCode 1.18.31; Gemini 3.8 Flash Low plus Gemini 3.8 Flash High
+for the OpenCode effort probe.
+
+| Artifact | Live outcome |
+| --- | --- |
+| `meridian-agy-pi-kqrZWn` | All 11 checks passed over 22 HTTP requests: coding, errors, exact bytes, streaming, saved continuation/fork, ls/find/grep, steering, compaction and abort/recovery. |
+| `meridian-agy-opencode-qyKT50` | All 9 checks passed over 18 HTTP requests: coding, errors, exact bytes, streaming, saved continuation/fork, glob/grep/task and native high effort. |
+| `meridian-agy-opencode-session-kolHLi` | Actual OpenCode server passed undo/continuation, saved compaction/recall, and cancellation/next-prompt recovery. |
+
+Pi steering must advance exactly one completed agy process and leave no pending
+process; the obsolete write must not exist. Regression tests separately cover
+steering in the same tool-result message and in a following user message, and
+reject an edited prefix before delivering either. Ordinary session continuation,
+fork, undo and compaction still replay client history rather than using native
+agy persistent resume.
+
+Retained failures and limits:
+
+- `meridian-agy-opencode-uiSPX9` caught a model writing literal backslash-n instead
+  of a newline. Runtime prompt guidance now distinguishes decoded bytes from JSON
+  escaping. The coding gate asks the client to verify bytes and repair failed
+  writes, then independently compares the final source/output. This does not
+  claim that model-generated arguments can never be wrong.
+- `meridian-agy-pi-ff38vU` passed coding/search/session checks but the optional
+  Claude Sonnet high-effort probe failed: the official CLI rejects that model's
+  effort override. Mismatching/unsupported model suffixes now fail before launch;
+  the supported native effort gate uses a matching Gemini high model. Pi should
+  select Gemini effort through model slugs, with numeric thinking controls off.
+- Official stream-json CLI input only supports text blocks. Images, native hard
+  token/thinking budgets, arbitrary plugins/extensions, native agy resume and
+  pending-tool recovery across process death are not established by these gates.
+
+The gates record the actual requests, client logs, versions and per-check report.
+They do not automatically repeat a failed model attempt. Client validation errors
+may be corrected by the model inside the same conversation, as in normal use.
+
 ## Quick Start
 
 ```bash

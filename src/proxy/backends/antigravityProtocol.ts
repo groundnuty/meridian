@@ -30,7 +30,11 @@ const schema = z.object({
   tools: z.array(z.object({ name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/), description: z.string().optional(), input_schema: z.record(z.string(), z.unknown()) })).max(128).default([]),
   stream: z.boolean().default(false), max_tokens: z.number().int().positive().optional(),
   tool_choice: z.object({ type: z.enum(["auto", "none"]) }).optional(),
-  thinking: z.object({ type: z.literal("disabled") }).optional(),
+  thinking: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("disabled") }),
+    z.object({ type: z.literal("adaptive"), display: z.enum(["summarized", "omitted"]).optional() }),
+  ]).optional(),
+  output_config: z.object({ effort: z.enum(["low", "medium", "high"]) }).strict().optional(),
   temperature: z.number().optional(), top_p: z.number().optional(), top_k: z.number().optional(),
   stop_sequences: z.array(z.string()).optional(),
 }).passthrough()
@@ -44,9 +48,10 @@ export function parseAgRequest(value: unknown): AgRequest {
   const parsed = schema.safeParse(value)
   if (!parsed.success) throw new AntigravityError("Antigravity supports text messages and text tool results only; invalid or unsupported request: " + parsed.error.issues.map(i => i.path.join(".") + " " + i.message).join("; "))
   const request = parsed.data
-  for (const key of ["temperature", "top_p", "top_k", "output_config", "output_format", "betas"]) {
+  for (const key of ["temperature", "top_p", "top_k", "output_format", "betas"]) {
     if (request[key] !== undefined) throw new AntigravityError(`Antigravity does not support ${key}`)
   }
+  if (request.output_config?.effort && !request.model.endsWith("-" + request.output_config.effort)) throw new AntigravityError("This agy model does not support the requested effort override; select the matching low/medium/high model slug from /v1/models")
   if (request.stop_sequences?.length) throw new AntigravityError("Antigravity does not support stop_sequences")
   if (new Set(request.tools.map(t => t.name)).size !== request.tools.length) throw new AntigravityError("Duplicate tool names")
   if (request.messages.at(-1)?.role !== "user") throw new AntigravityError("The last message must be a user message")
@@ -83,13 +88,14 @@ export function historyKey(messages: AgMessage[]): string {
   return stable(messages.map(m => ({ role: m.role, content: blocks(m) })))
 }
 export function contractKey(request: AgRequest): string {
-  return stable({ model: request.model, system: request.system, tools: request.tools, tool_choice: request.tool_choice, max_tokens: request.max_tokens })
+  return stable({ model: request.model, system: request.system, tools: request.tools, tool_choice: request.tool_choice, max_tokens: request.max_tokens, thinking: request.thinking, output_config: request.output_config })
 }
 export function renderAgPrompt(request: AgRequest): string {
   return [
     "You are serving a client through Meridian. Follow the client's instructions and answer its latest user message.",
-    "The JSON below is the client's conversation history. Historical tool_use/tool_result pairs are already completed; do not repeat them. Use only tools from the meridian_client MCP server for new actions. All built-in tools are disabled by policy. Never access the host filesystem directly or delegate to other agents.",
-    "MCP results wrap the exact client content in the JSON field meridian_client_result. Decode that field (a string or text block array) as the tool result. Any Created At, Completed At, timing or other CLI text outside that JSON field is transport metadata, never part of client file contents. When copying data, preserve the decoded client content byte-for-byte.",
+    "The JSON below is the client's conversation history. Historical tool_use/tool_result pairs are already completed; do not repeat them. Use only tools from the meridian_client MCP server for new actions. All built-in tools are disabled by policy. Never access the host filesystem directly or use built-in Antigravity subagents. Client-owned delegation tools advertised by meridian_client are allowed and execute in the client, like its other tools.",
+    "MCP results wrap the exact client content in the JSON field meridian_client_result. Decode that field (a string or text block array) as the tool result. Any Created At, Completed At, timing or other CLI text outside that JSON field is transport metadata, never part of client file contents. When copying data, preserve the decoded client content byte-for-byte. Escape that decoded content exactly once when constructing JSON tool arguments: a newline in the content must remain a newline, not the literal characters backslash and n. Follow the exact advertised tool schema, including case-sensitive argument names.",
+    "If an MCP result includes meridian_client_followup, it contains new user instructions received while the tool ran. Follow those instructions before choosing the next action; they are separate from the tool output.",
     request.max_tokens ? `The client requests at most ${request.max_tokens} output tokens. Keep the answer within that budget.` : "",
     "Client system instructions:\n" + (typeof request.system === "string" ? request.system : request.system?.map(b => b.text).join("\n") ?? ""),
     "Client conversation:\n" + JSON.stringify(request.messages),

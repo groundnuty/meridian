@@ -33,20 +33,25 @@ async function readBody(request: Request): Promise<unknown> {
 export function createAntigravityServer(config: ProxyConfig, runtime = new AntigravityRuntime({ ...config.antigravity, maxConcurrent: config.antigravity?.maxConcurrent ?? config.maxConcurrent })): ProxyServer & { closeBackend(): Promise<void>; providerStatus(): Promise<ProviderUsage> } {
   if (config.profiles?.length || config.defaultProfile) throw new Error("Antigravity does not support Claude profile configuration")
   async function selectRun(body: AgRequest, signal: AbortSignal): Promise<AntigravityRun> {
-    const last = blocks(body.messages.at(-1)!)
-    const results = last.filter(b => b.type === "tool_result")
-    if (results.length) {
-      if (results.length !== 1 || last.length !== 1) throw new AntigravityError("Antigravity requires one requested tool result per continuation, without additional user content", 409)
+    // Clients may append steering as text in the result message or as another
+    // user message. Match the delivered assistant prefix before accepting either.
+    const suffixStart = body.messages.findLastIndex(message => message.role === "assistant") + 1
+    const suffix = body.messages.slice(suffixStart)
+    const results = suffix.flatMap(blocks).filter(b => b.type === "tool_result")
+    const owners = results.map(result => runtime.toolOwners.get(result.tool_use_id)).filter(run => run !== undefined)
+    if (owners.length || blocks(body.messages.at(-1)!).some(b => b.type === "tool_result")) {
+      if (results.length !== 1) throw new AntigravityError("Antigravity requires one requested tool result per continuation", 409)
       const result = results[0]!
       const run = runtime.toolOwners.get(result.tool_use_id)
       if (!run) throw new AntigravityError("Antigravity tool turn expired or was interrupted; start a new user turn with the complete completed-tool history", 409)
       if (run.busy) throw new AntigravityError("Antigravity turn already has an active response", 409)
-      if (run.delivered?.id !== result.tool_use_id || run.contract !== contractKey(body) || historyKey(run.history) !== historyKey(body.messages.slice(0, -1))) {
+      if (run.delivered?.id !== result.tool_use_id || run.contract !== contractKey(body) || historyKey(run.history) !== historyKey(body.messages.slice(0, suffixStart))) {
         throw new AntigravityError("Pending Antigravity tool continuation changed its history, model, instructions or tools", 409)
       }
+      const followup = suffix.map(message => ({ ...message, content: blocks(message).filter(b => b.type === "text") })).filter(message => message.content.length > 0)
       run.busy = true
       run.history = body.messages
-      run.accept(result)
+      run.accept(result, followup)
       return run
     }
     const run = await runtime.create(body, signal)

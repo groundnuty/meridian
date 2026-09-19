@@ -21,6 +21,11 @@ public listener. Backend modules do not import Claude session or cache modules.
 The runtime maps contain only live requests and outstanding tool correlations,
 like `sessionTree.ts`; they are not another durable session cache. Tool calls
 remain pending inside the official CLI until their client result arrives.
+The exact pending assistant prefix also permits appended user steering, either
+beside the tool result or in subsequent user messages. New instructions travel
+in a separate MCP result envelope field; they do not become tool output and do
+not start a second process. Client-owned delegation tools follow the same MCP
+path as file tools; built-in Antigravity subagents remain blocked.
 Completed requests have no cached mapping; the next turn replays client
 history. Native Claude transcript lifecycle and lineage persistence cannot be
 applied to Antigravity. `ProxyInstance.close()` joins owned subprocesses;

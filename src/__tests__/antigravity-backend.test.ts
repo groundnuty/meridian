@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url"
 import { createAntigravityServer } from "../proxy/backends/antigravity"
 import { AntigravityRuntime } from "../proxy/backends/antigravityRuntime"
 import { DEFAULT_PROXY_CONFIG } from "../proxy/types"
-import { parseAgRequest, historyKey } from "../proxy/backends/antigravityProtocol"
+import { parseAgRequest, historyKey, contractKey } from "../proxy/backends/antigravityProtocol"
 
 interface TestReply {
   backend?: string
@@ -33,6 +33,14 @@ describe("Antigravity request contract", () => {
     expect(() => parseAgRequest({ ...initial(), thinking: { type: "enabled", budget_tokens: 100 } })).toThrow()
     expect(() => parseAgRequest({ ...initial(), tool_choice: { type: "tool", name: "lookup" } })).toThrow()
   })
+  it("supports native effort and binds it to a pending tool contract", () => {
+    const base = parseAgRequest({ ...initial(), model: "fixture-model-high", thinking: { type: "adaptive" }, output_config: { effort: "high" } })
+    expect(() => parseAgRequest({ ...initial(), model: "claude-sonnet-4-6", output_config: { effort: "high" } })).toThrow("model slug")
+    expect(base.output_config?.effort).toBe("high")
+    expect(contractKey(base)).not.toBe(contractKey({ ...base, output_config: { effort: "low" } }))
+    expect(() => parseAgRequest({ ...initial(), output_config: { effort: "max" } })).toThrow()
+    expect(() => parseAgRequest({ ...initial(), output_config: { format: { type: "json_schema", schema: {} } } })).toThrow()
+  })
   it("normalizes string/text messages and JSON key order for continuation", () => {
     expect(historyKey([{ role: "user", content: "hello" }])).toBe(historyKey([{ role: "user", content: [{ type: "text", text: "hello" }] }]))
   })
@@ -49,6 +57,11 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(body.content).toEqual([{ type: "text", text: "READY" }])
     expect(body.usage.input_tokens).toBe(100) // CLI input includes its 20 cached tokens.
     expect(body.usage.cache_read_input_tokens).toBe(20)
+  })
+  it("passes reasoning effort to the official CLI flag", async () => {
+    const { send } = fixture()
+    const response = await send({ ...initial("EFFORT_PROBE"), model: "fixture-model-high", tools: [], thinking: { type: "adaptive" }, output_config: { effort: "high" } })
+    expect(response.status).toBe(200)
   })
   it("holds MCP until the matching HTTP tool result and preserves is_error", async () => {
     const { send, runtime } = fixture()
@@ -73,6 +86,23 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(call.input).toEqual({ key: "café/你好/🧪.txt" })
     const response = await send({ ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "done" }] }] })
     expect((await decode(response)).content[0]?.text).toBe("UNICODE_OK")
+  })
+  for (const separateMessage of [false, true]) it(`preserves pending tools when steering arrives in ${separateMessage ? "a separate user message" : "the result message"}`, async () => {
+    const { send, runtime } = fixture()
+    const request = initial("STEERING")
+    const first = await decode(await send(request))
+    const call = first.content.find(b => b.type === "tool_use")!
+    const result = { type: "tool_result", tool_use_id: call.id, content: "receipt" }
+    const text = { type: "text", text: "Do not write a file; explain the receipt instead." }
+    const suffix = separateMessage ? [{ role: "user", content: [result] }, { role: "user", content: [text] }] : [{ role: "user", content: [result, text] }]
+    const followup = { ...request, messages: [...request.messages, { role: "assistant", content: first.content }, ...suffix] }
+    const changed = { ...followup, messages: [{ role: "user", content: "changed" }, ...followup.messages.slice(1)] }
+    expect((await send(changed)).status).toBe(409)
+    expect(runtime.runs.size).toBe(1)
+    const answer = await decode(await send(followup))
+    expect(answer.stop_reason).toBe("end_turn")
+    expect(JSON.parse(answer.content[0]!.text!)).toEqual([{ role: "user", content: [text] }])
+    expect(runtime.completed).toBe(1)
   })
   it("serializes a parallel upstream batch into individually correlated client calls", async () => {
     const { send } = fixture()

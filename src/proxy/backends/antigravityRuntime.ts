@@ -10,6 +10,8 @@ import { z } from "zod"
 import { AgEventQueue, AntigravityError, classifyAgFailure, renderAgPrompt, contractKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 
 import type { AntigravityOptions } from "../types"
+type AgToolReply = AgResult & { clientMessages?: AgMessage[] }
+
 export interface AgExchange {
   requestId: string; timestamp: number; durationMs: number; model: string; status: number; error?: string;
   inputTokens: number; outputTokens: number; cacheReadTokens: number;
@@ -48,8 +50,8 @@ export class AntigravityRun {
   private timer?: ReturnType<typeof setTimeout>
   private pendingTimer?: ReturnType<typeof setTimeout>
   private killTimer?: ReturnType<typeof setTimeout>
-  private readonly pending = new Map<string, { call: AgCall; resolve: (result: AgResult) => void; reject: (error: Error) => void }>()
-  private readonly rpcCalls = new Map<string, { identity: string; result: Promise<AgResult> }>()
+  private readonly pending = new Map<string, { call: AgCall; resolve: (result: AgToolReply) => void; reject: (error: Error) => void }>()
+  private readonly rpcCalls = new Map<string, { identity: string; result: Promise<AgToolReply> }>()
   private settledResolve!: () => void
   readonly settled = new Promise<void>(resolve => { this.settledResolve = resolve })
   constructor(readonly runtime: AntigravityRuntime, readonly request: AgRequest) {
@@ -69,6 +71,7 @@ export class AntigravityRun {
       await writeFile(join(this.workspace, ".agents/mcp_config.json"), JSON.stringify({ mcpServers: { meridian_client: { serverUrl: `${this.runtime.mcpUrl}/${this.id}` } } }))
       if (this.stopped) { await this.cleanup(); return }
       const args = ["--new-project", "--add-dir", this.workspace, "--input-format", "stream-json", "--model", this.request.model, "--output-format", "stream-json", "--print-timeout", `${Math.ceil(this.runtime.turnTimeoutMs / 1000)}s`, "--disable-slash-commands", "--sandbox"]
+      if (this.request.output_config?.effort) args.push("--effort", this.request.output_config.effort)
       if (tools.length) args.push("--dangerously-skip-permissions")
       const child = this.child = spawn(this.runtime.executable, args, { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: true })
       child.stdin.on("error", error => this.abort(new AntigravityError(`Antigravity input failed: ${error.message}`, 502, "api_error")))
@@ -116,7 +119,7 @@ export class AntigravityRun {
       throw error
     }
   }
-  dispatchCall(id: string | number, name: string, input: Record<string, unknown>): Promise<AgResult> {
+  dispatchCall(id: string | number, name: string, input: Record<string, unknown>): Promise<AgToolReply> {
     const key = typeof id + ':' + id
     const identity = stable({ name, input })
     const existing = this.rpcCalls.get(key)
@@ -129,7 +132,7 @@ export class AntigravityRun {
     this.rpcCalls.set(key, { identity, result })
     return result
   }
-  async call(name: string, input: Record<string, unknown>): Promise<AgResult> {
+  async call(name: string, input: Record<string, unknown>): Promise<AgToolReply> {
     if (this.stopped || this.terminal) throw new Error("Turn is closed")
     if (this.pending.size >= 32) throw new Error("Too many outstanding tools")
     const call: AgCall = { type: "tool_use", id: "toolu_agy_" + randomUUID().replaceAll("-", ""), name, input }
@@ -144,14 +147,14 @@ export class AntigravityRun {
     this.pendingTimer = setTimeout(() => this.abort(new AntigravityError("Client tool result deadline expired; start a fresh turn", 409, "invalid_request_error")), this.runtime.pendingToolTimeoutMs)
     this.pendingTimer.unref()
   }
-  accept(result: AgResult): void {
+  accept(result: AgResult, clientMessages: AgMessage[] = []): void {
     const pending = this.pending.get(result.tool_use_id)
     if (!pending || result.tool_use_id !== this.delivered?.id) throw new AntigravityError("Tool result was not requested by this turn", 409)
     clearTimeout(this.pendingTimer)
     this.pending.delete(result.tool_use_id)
     this.runtime.toolOwners.delete(result.tool_use_id)
     this.delivered = undefined
-    pending.resolve(result)
+    pending.resolve({ ...result, clientMessages })
   }
   abort(error: Error): void {
     if (this.stopped) return
@@ -362,7 +365,7 @@ export class AntigravityRuntime {
         const value = await run.dispatchCall(rpc.id, params.name, params.arguments)
         // CLI adds timing prose around MCP responses. An explicit JSON envelope
         // preserves the boundary between exact client bytes and harness metadata.
-        result = { content: [{ type: "text", text: JSON.stringify({ meridian_client_result: value.content ?? "", is_error: value.is_error ?? false }) }], isError: value.is_error ?? false }
+        result = { content: [{ type: "text", text: JSON.stringify({ meridian_client_result: value.content ?? "", meridian_client_followup: value.clientMessages?.length ? value.clientMessages : undefined, is_error: value.is_error ?? false }) }], isError: value.is_error ?? false }
       } else return reply(res, 200, { jsonrpc: "2.0", id: rpc.id, error: { code: -32601, message: "Method not found" } })
       reply(res, 200, { jsonrpc: "2.0", id: rpc.id, result })
     } catch (error) { reply(res, 200, { jsonrpc: "2.0", id: rpcId ?? null, error: { code: -32603, message: String(error) } }) }
