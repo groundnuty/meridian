@@ -1,6 +1,6 @@
 import { providerOverview, type ProviderFilter } from '../../../src/telemetry/providerView'
 import { object, rows, text, number } from './core'
-import { filterLogs, filterRequests } from './uiData'
+import { filterLogs, filterRequests, sortProfilesByConfiguredOrder } from './uiData'
 import type { DesktopState, Action } from './contracts'
 const pages = ['Overview', 'Providers', 'Usage & accounts', 'Requests', 'Logs', 'Service', 'Versions', 'Plugins', 'Settings'] as const
 type Page = typeof pages[number]
@@ -15,6 +15,52 @@ let logSource = 'incidents'
 let logFilter = ''
 let selectedRequest = ''
 let renderedKey = ''
+let accountSort: 'configured' | 'spent-desc' | 'spent-asc' = 'configured'
+
+const GENERAL_WINDOW_TYPES = ['five_hour', 'seven_day']
+const FADE_FROM = 0.85
+const SPENT_AT = 0.95
+
+function computeProfileSpend(profile: Record<string, unknown>, account: Record<string, unknown>) {
+  const failureObj = profile.failure && typeof profile.failure === 'object' ? profile.failure as Record<string, unknown> : null
+  const failureReason = failureObj ? text(failureObj.reason) : ''
+  const isUnusable = account.loggedIn === false || profile.error === 'no_token' || failureReason === 'auth_failure'
+  if (isUnusable) return { fraction: 1, state: 'spent', fade: 0, reason: 'unusable' }
+  const spentObj = profile.spent && typeof profile.spent === 'object' ? profile.spent as Record<string, unknown> : null
+  const isSpent = Boolean(spentObj && (!spentObj.until || Number(spentObj.until) > Date.now()))
+  if (isSpent) return { fraction: 1, state: 'spent', fade: 1, reason: 'refusing' }
+  const wins = rows(profile.windows)
+  let worst: number | null = null
+  for (const w of wins) {
+    const type = text(w.type)
+    if (!GENERAL_WINDOW_TYPES.includes(type)) continue
+    const val = number(w.utilization)
+    if (val === undefined || !isFinite(val)) continue
+    const clamped = Math.max(0, Math.min(1, val))
+    if (worst === null || clamped > worst) worst = clamped
+  }
+  if (worst === null) return { fraction: null, state: 'unknown', fade: 0, reason: null }
+  if (worst >= SPENT_AT) return { fraction: worst, state: 'spent', fade: 1, reason: 'usage' }
+  if (worst >= FADE_FROM) return { fraction: worst, state: 'fading', fade: (worst - FADE_FROM) / (SPENT_AT - FADE_FROM), reason: null }
+  return { fraction: worst, state: 'available', fade: 0, reason: null }
+}
+
+function sortProfilesForView(items: string[], mode: 'configured' | 'spent-desc' | 'spent-asc', spentOf: (id: string) => number | null): string[] {
+  const list = items.slice()
+  if (mode === 'configured') return list
+  const direction = mode === 'spent-desc' ? -1 : 1
+  return list
+    .map((item, index) => ({ item, index, spent: spentOf(item) }))
+    .sort((a, b) => {
+      if (a.spent === null || b.spent === null) {
+        if (a.spent === null && b.spent === null) return a.index - b.index
+        return a.spent === null ? 1 : -1
+      }
+      if (a.spent !== b.spent) return (a.spent - b.spent) * direction
+      return a.index - b.index
+    })
+    .map(entry => entry.item)
+}
 const el = (id: string) => { const element = document.getElementById(id); if (!element) throw new Error(`Missing ${id}`); return element }
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char)
 const count = (value: unknown) => number(value)?.toLocaleString(undefined, { maximumFractionDigits: 1 }) ?? '—'
@@ -90,9 +136,30 @@ const definition = (entries: [string, unknown][]) => `<dl>${entries.map(([label,
 function quotas(limit = 100, manage = false) {
   const quotaProfiles = rows(object(state?.quota).profiles)
   const accountProfiles = rows(object(state?.profiles).profiles)
-  const ids = [...new Set([...accountProfiles, ...quotaProfiles].map(profile => text(profile.id)))].filter(Boolean).slice(0, limit)
+  let ids = [...new Set([...accountProfiles, ...quotaProfiles].map(profile => text(profile.id)))].filter(Boolean)
   if (!ids.length) return empty('No accounts available', 'Check the service connection in Settings.')
-  return `<div class="quota-list">${ids.map(id => {
+  const profileOrder = Array.isArray(object(state?.profiles).profileOrder)
+    ? (object(state?.profiles).profileOrder as string[])
+    : undefined
+  ids = sortProfilesByConfiguredOrder(ids, profileOrder)
+  if (manage) {
+    ids = sortProfilesForView(ids, accountSort, id => {
+      const p = quotaProfiles.find(item => item.id === id) ?? {}
+      const a = accountProfiles.find(item => item.id === id) ?? {}
+      return computeProfileSpend(p, a).fraction
+    })
+  }
+  ids = ids.slice(0, limit)
+  const sortTabsHtml = manage && ids.length > 1 ? `
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px">
+      <span class="eyebrow">Accounts</span>
+      <div class="sort-tabs" role="group" aria-label="Sort accounts">
+        <button type="button" class="sort-tab ${accountSort === 'configured' ? 'active' : ''}" data-account-sort="configured" aria-pressed="${accountSort === 'configured'}">Configured</button>
+        <button type="button" class="sort-tab ${accountSort === 'spent-desc' ? 'active' : ''}" data-account-sort="spent-desc" title="Closest to running out first" aria-pressed="${accountSort === 'spent-desc'}">Most used</button>
+        <button type="button" class="sort-tab ${accountSort === 'spent-asc' ? 'active' : ''}" data-account-sort="spent-asc" title="Most capacity left first" aria-pressed="${accountSort === 'spent-asc'}">Least used</button>
+      </div>
+    </div>` : ''
+  return `${sortTabsHtml}<div class="quota-list">${ids.map(id => {
     const profile = quotaProfiles.find(item => item.id === id) ?? {}
     const account = accountProfiles.find(item => item.id === id) ?? {}
     const active = object(state?.profiles).activeProfile === id
@@ -124,13 +191,18 @@ function quotas(limit = 100, manage = false) {
     const cachedProvenance = text(account.authProvenance) === 'cached'
     const planTag = plan ? `<span class="plan-tag">${esc(plan.toUpperCase())}${cachedProvenance ? ' (cached)' : ''}</span>` : ''
     const routesSummary = object(state?.routesSummary)
+    const aliases = Array.isArray(account.aliases) ? (account.aliases as unknown[]).map(text).filter(Boolean) : []
+    const aliasesTag = aliases.length > 0 ? `<small class="mono muted" style="margin-left:8px;font-size:10px" title="Also answers to: ${esc(aliases.join(', '))}">aka ${esc(aliases.join(', '))}</small>` : ""
     const profileTally = object(object(routesSummary.byProfile)[id])
     const servedCount = number(profileTally.served)
     const refusedCount = number(profileTally.refused)
     const tallyTag = (servedCount !== undefined && servedCount > 0) || (refusedCount !== undefined && refusedCount > 0)
       ? `<small class="mono muted" style="margin-left:8px;font-size:10px">${count(servedCount ?? 0)} served${refusedCount ? ` · <span class="status bad" style="font-size:9px;padding:1px 4px">${count(refusedCount)} refused</span>` : ''}</small>`
       : ''
-    return `<article class="account ${active ? 'selected-account' : ''}"><div class="account-head"><div class="avatar">${esc(id.slice(0, 1).toUpperCase())}</div><div><strong>${esc(id)}</strong>${planTag}${tallyTag}${account.email ? `<small>${esc(account.email)}</small>` : ''}</div>${active ? (isSpent ? `<span class="status active">Active</span><span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : '<span class="status active">Active</span>') : isSpent ? `<span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : needsLogin ? '<span class="status bad">Needs login</span>' : ''}</div>${effectiveReason ? `<p class="account-warning ${isSpent ? 'account-refusing' : ''}" title="${esc(isSpent && spentDiagnosis ? text(spentDiagnosis.rationale) : profile.error || '')}">${esc(effectiveReason)}</p>` : ''}${rows(profile.windows).map(window => {
+    const spend = computeProfileSpend(profile, account)
+    const spendClass = spend.state === 'fading' ? 'spend-fading' : spend.state === 'spent' && spend.reason !== 'unusable' ? 'spend-spent' : ''
+    const spendStyle = spend.fade > 0 && spend.state === 'fading' ? ` style="--spend-fade:${spend.fade.toFixed(2)}"` : ''
+    return `<article class="account ${active ? 'selected-account' : ''} ${spendClass}"${spendStyle}><div class="account-head"><div class="avatar">${esc(id.slice(0, 1).toUpperCase())}</div><div><strong>${esc(id)}</strong>${planTag}${tallyTag}${aliasesTag}${account.email ? `<small>${esc(account.email)}</small>` : ''}</div>${active ? (isSpent ? `<span class="status active">Active</span><span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : '<span class="status active">Active</span>') : isSpent ? `<span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : needsLogin ? '<span class="status bad">Needs login</span>' : ''}</div>${effectiveReason ? `<p class="account-warning ${isSpent ? 'account-refusing' : ''}" title="${esc(isSpent && spentDiagnosis ? text(spentDiagnosis.rationale) : profile.error || '')}">${esc(effectiveReason)}</p>` : ''}${rows(profile.windows).map(window => {
       const value = number(window.utilization)
       const clamped = Math.max(0, Math.min(1, value ?? 0))
       const reset = number(window.resetsAt)
@@ -270,6 +342,7 @@ function renderContent() {
     if (!target) return
     if (target.dataset.provider) { const id = target.dataset.provider; if (id === 'all' || id === 'claude' || id === 'antigravity') { providerFilter = id; renderContent() } }
     if (target.dataset.go) { const next = pages.find(name => name === target.dataset.go); if (next) navigate(next) }
+    if (target.dataset.accountSort) { accountSort = target.dataset.accountSort as any; renderContent() }
     if (target.dataset.request) { const id = target.dataset.request; if (page !== 'Requests') navigate('Requests'); selectedRequest = id; el('request-detail').innerHTML = requestDetail(); el('request-detail').scrollIntoView({block:'nearest'}) }
     if (target.id === 'close-detail') { selectedRequest = ''; el('request-detail').replaceChildren() }
     if (target.dataset.logSource) { logSource = target.dataset.logSource; renderContent() }

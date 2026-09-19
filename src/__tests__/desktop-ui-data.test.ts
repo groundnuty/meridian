@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { filterLogs, filterRequests } from '../../apps/desktop/src/uiData'
+import { filterLogs, filterRequests, sortProfilesByConfiguredOrder } from '../../apps/desktop/src/uiData'
 
 describe('desktop request exploration', () => {
   const data = [
@@ -34,4 +34,18 @@ test('request provider filter separates Google-backed calls from Claude', () => 
   const rows = [{requestId:'one',provider:'antigravity',model:'gemini',status:200,timestamp:1},{requestId:'two',model:'haiku',status:500,timestamp:2}]
   expect(filterRequests(rows, '', 'all', 'antigravity').map(r => r.requestId)).toEqual(['one'])
   expect(filterRequests(rows, '', 'errors', 'claude').map(r => r.requestId)).toEqual(['two'])
+})
+
+describe('desktop profile ordering', () => {
+  test('sorts profiles by configured order and preserves unlisted at end', () => {
+    const ids = ['alpha', 'beta', 'gamma', 'delta']
+    const order = ['gamma', 'alpha']
+    expect(sortProfilesByConfiguredOrder(ids, order)).toEqual(['gamma', 'alpha', 'beta', 'delta'])
+  })
+
+  test('returns original copy if order is absent or empty', () => {
+    const ids = ['a', 'b', 'c']
+    expect(sortProfilesByConfiguredOrder(ids)).toEqual(['a', 'b', 'c'])
+    expect(sortProfilesByConfiguredOrder(ids, [])).toEqual(['a', 'b', 'c'])
+  })
 })

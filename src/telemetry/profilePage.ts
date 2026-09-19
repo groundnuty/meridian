@@ -4,6 +4,7 @@
  */
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
+import { reorderClientJs, reorderCss, reorderLiveRegionHtml } from "./profileOrder"
 import { WINDOW_LABELS } from "./profileUsage"
 
 export const profilePageHtml = `<!DOCTYPE html>
@@ -30,7 +31,23 @@ export const profilePageHtml = `<!DOCTYPE html>
   }
   .profile-card.active { border-color: var(--accent); }
   .profile-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  ${reorderCss}
   .profile-name { font-size: 16px; font-weight: 600; }
+  .profile-card-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .icon-btn {
+    background: var(--bg); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 6px; cursor: pointer; display: inline-flex;
+    align-items: center; transition: all 0.15s;
+  }
+  .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .rename-input {
+    background: var(--surface2); color: var(--text); border: 1px solid var(--accent);
+    border-radius: 6px; padding: 4px 8px; font-size: 14px; font-weight: 600;
+    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; width: 200px;
+  }
+  .rename-input:focus { outline: none; }
+  .rename-hint { font-size: 11px; color: var(--muted); }
+  .rename-error { font-size: 12px; color: var(--red); margin-bottom: 12px; }
   .profile-badge {
     font-size: 10px; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;
     letter-spacing: 0.5px; font-weight: 500;
@@ -148,6 +165,7 @@ export const profilePageHtml = `<!DOCTYPE html>
 <div class="subtitle">Manage Claude account profiles</div>
 
 <div id="content"><div style="color:var(--muted);padding:40px;text-align:center">Loading\u2026</div></div>
+${reorderLiveRegionHtml}
 
 <div class="section" style="margin-top:32px">
   <div class="section-title">Setup Guide</div>
@@ -184,8 +202,14 @@ export const profilePageHtml = `<!DOCTYPE html>
     <div style="font-size:13px;margin-top:8px">
       <code>meridian profile list</code> \u2014 show all profiles and auth status<br>
       <code>meridian profile login &lt;name&gt;</code> \u2014 re-authenticate an expired profile<br>
+      <code>meridian profile rename &lt;old&gt; &lt;new&gt;</code> \u2014 rename a profile (or use the pencil above)<br>
       <code>meridian profile remove &lt;name&gt;</code> \u2014 remove a profile
     </div>
+    <p style="font-size:13px;color:var(--muted);margin-top:12px">
+      Renaming keeps the old name working: requests still naming it are served by
+      the renamed profile, so nothing breaks mid-flight. That redirect is dropped
+      as soon as the old name is taken again by a new profile.
+    </p>
   </div>
 </div>
 </div>
@@ -241,15 +265,80 @@ function formatExtraUsage(eu) {
   };
 }
 
+${reorderClientJs}
+
 // Cache the last seen quota response so the /profiles/list refresh can
 // keep showing usage even if a single /v1/usage/quota/all call fails.
 var lastQuota = null;
+// Last profile payload, so a rename can redraw from cache without refetching.
+var lastProfiles = null;
+// Profile whose name is being edited in place, and the error from the last
+// rejected attempt. While editing, the poll is suspended — it rewrites
+// innerHTML, which would blank the input mid-keystroke.
+var editingProfile = null;
+var renameError = null;
+
+var ICON_PENCIL = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"/></svg>';
+var ICON_CHECK = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>';
+var ICON_X = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>';
+
+function focusRenameInput() {
+  var el = document.getElementById('rename-input');
+  if (el) { el.focus(); el.select(); }
+}
+
+function redraw() {
+  if (lastProfiles) render(lastProfiles, lastQuota);
+}
+
+function startRename(id) {
+  editingProfile = id;
+  renameError = null;
+  redraw();
+  focusRenameInput();
+}
+
+function cancelRename() {
+  editingProfile = null;
+  renameError = null;
+  redraw();
+}
+
+async function commitRename(from) {
+  var input = document.getElementById('rename-input');
+  if (!input) return;
+  var to = input.value.trim();
+  if (!to || to === from) { cancelRename(); return; }
+  var data;
+  try {
+    var res = await fetch('/profiles/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: from, to: to })
+    });
+    data = await res.json();
+  } catch (err) {
+    data = { error: 'Could not reach Meridian.' };
+  }
+  if (data && data.success) {
+    editingProfile = null;
+    renameError = null;
+    await refresh();
+    if (window.meridianHeaderRefresh) window.meridianHeaderRefresh();
+    return;
+  }
+  renameError = (data && data.error) || 'Rename failed.';
+  redraw();
+  focusRenameInput();
+}
 
 async function refresh() {
+  if (editingProfile) return;
   try {
-    var [profilesRes, quotaRes] = await Promise.all([
+    var [profilesRes, quotaRes, routingRes] = await Promise.all([
       fetch('/profiles/list'),
       fetch('/v1/usage/quota/all').catch(function () { return null; }),
+      fetch('/settings/api/routing').catch(function () { return null; }),
     ]);
     var profiles = await profilesRes.json();
     var quota = null;
@@ -257,6 +346,10 @@ async function refresh() {
       try { quota = await quotaRes.json(); } catch (_) { quota = null; }
     }
     if (quota) lastQuota = quota;
+    if (routingRes && routingRes.ok) {
+      try { meridianReorder.adopt(await routingRes.json()); } catch (_) { /* keep the last good order */ }
+    }
+    lastProfiles = profiles;
     render(profiles, lastQuota);
   } catch {
     document.getElementById('content').innerHTML = '<div class="empty-state"><h2>Could not load profiles</h2><p>Is Meridian running?</p></div>';
@@ -431,8 +524,9 @@ function renderUsageSection(profileQuota) {
 }
 
 function render(data, quotaData) {
-  const profiles = data.profiles || [];
+  const profiles = meridianReorder.sortProfiles(data.profiles || []);
   const active = data.activeProfile;
+  const refocusId = meridianReorder.focusAnchor();
   // Build quick lookup: profileId -> per-profile quota entry from
   // /v1/usage/quota/all. Endpoint may be unavailable (older Meridian)
   // or have errored — in that case quotaById is empty and the per-card
@@ -452,18 +546,41 @@ function render(data, quotaData) {
     return;
   }
 
-  let html = '<div class="section"><div class="section-title">Configured Profiles</div>';
+  const reorderable = profiles.length > 1 && !meridianReorder.envPinned();
 
-  for (const p of profiles) {
+  let html = '<div class="section"><div class="section-title">Configured Profiles</div>';
+  if (profiles.length > 1) html += meridianReorder.noteHtml(reorderable);
+
+  for (let idx = 0; idx < profiles.length; idx++) {
+    const p = profiles[idx];
     const isActive = p.id === active;
-    html += '<div class="profile-card' + (isActive ? ' active' : '') + '">';
+    html += '<div class="profile-card' + (isActive ? ' active' : '') + '" data-id="' + esc(p.id) + '" data-index="' + idx + '">';
     html += '<div class="profile-card-header">';
-    html += '<span class="profile-name">' + esc(p.id) + '</span>';
-    if (isActive) html += '<span class="profile-badge badge-active">active</span>';
-    html += '<span class="profile-badge badge-type">' + esc(p.type || 'claude-max') + '</span>';
-    html += renderSpentBadge((quotaById[p.id] || {}).spent);
+    if (editingProfile === p.id) {
+      html += "<input class=\"rename-input\" id=\"rename-input\" value=\"" + esc(p.id) + "\" spellcheck=\"false\" autocomplete=\"off\""
+        + " onkeydown=\"if(event.key===&quot;Enter&quot;){event.preventDefault();commitRename(&quot;" + esc(p.id) + "&quot;)}"
+        + "else if(event.key===&quot;Escape&quot;){cancelRename()}\">";
+      html += "<span class=\"rename-hint\">Enter to save \u00b7 Esc to cancel</span>";
+      html += "<span class=\"profile-card-actions\">";
+      html += "<button class=\"icon-btn\" title=\"Save new name\" onclick=\"commitRename(&quot;"+esc(p.id)+"&quot;)\">" + ICON_CHECK + "</button>";
+      html += "<button class=\"icon-btn\" title=\"Cancel\" onclick=\"cancelRename()\">" + ICON_X + "</button>";
+      html += "</span>";
+    } else {
+      if (reorderable) html += meridianReorder.handleHtml(p.id, idx, profiles.length);
+      html += "<span class=\"profile-name\">" + esc(p.id) + "</span>";
+      if (isActive) html += "<span class=\"profile-badge badge-active\">active</span>";
+      html += "<span class=\"profile-badge badge-type\">" + esc(p.type || "claude-max") + "</span>";
+      html += renderSpentBadge((quotaById[p.id] || {}).spent);
+      html += "<span class=\"profile-card-actions\">";
+      html += "<button class=\"icon-btn\" title=\"Rename profile\" onclick=\"startRename(&quot;"+esc(p.id)+"&quot;)\">" + ICON_PENCIL + "</button>";
+      html += "</span>";
+    }
     html += '</div>';
     html += renderSpentNote((quotaById[p.id] || {}).spent);
+
+    if (editingProfile === p.id && renameError) {
+      html += '<div class="rename-error">' + esc(renameError) + '</div>';
+    }
 
     html += '<div class="profile-details">';
     var authProvenance = p.authProvenance || 'live';
@@ -475,10 +592,16 @@ function render(data, quotaData) {
       p.loggedIn ? 'status-ok' : 'status-err');
 
     var emailCell = renderFactValue(p.email, authStale);
-    if (emailCell) html += '<span class="detail-label">Email</span>' + emailCell;
+    if (emailCell) html += "<span class=\"detail-label\">Email</span>" + emailCell;
 
     var planCell = renderFactValue(p.subscriptionType, authStale);
-    if (planCell) html += '<span class="detail-label">Plan</span>' + planCell;
+    if (planCell) html += "<span class=\"detail-label\">Plan</span>" + planCell;
+
+    if (p.aliases && p.aliases.length > 0) {
+      html += "<span class=\"detail-label\">Former names</span>";
+      html += "<span class=\"detail-value\" title=\"Requests naming these are served by this profile, until the name is added again\">"
+        + p.aliases.map(esc).join(", ") + "</span>";
+    }
     if (p.lastSuccessAt) {
       html += '<span class="detail-label">Last Verified</span>';
       html += '<span class="detail-value" style="color:var(--green)">' + timeAgo(p.lastSuccessAt) + '</span>';
@@ -516,6 +639,7 @@ function render(data, quotaData) {
 
   html += '</div>';
   document.getElementById('content').innerHTML = html;
+  meridianReorder.restoreFocus(refocusId);
 }
 
 function timeAgo(ts) {
@@ -549,8 +673,9 @@ async function switchProfile(id) {
   if (data.success) refresh();
 }
 
+meridianReorder.init({ onSaved: refresh });
 refresh();
-setInterval(refresh, 10000);
+setInterval(function () { if (!meridianReorder.dragging()) refresh(); }, 10000);
 ` + profileBarJs + `
 </script>
 </body>

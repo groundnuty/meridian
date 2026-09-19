@@ -58,7 +58,8 @@ import { classifyTurnOutcome, createRecoveryLifter, hasTruncatableText, shouldAt
 import { resolveAgentAlias } from "./agentMatch"
 import { LRUMap } from "../utils/lruMap"
 
-import { telemetryStore, diagnosticLog, createTelemetryRoutes, landingHtml, renderPrometheusMetrics } from "../telemetry"
+import { telemetryStore, diagnosticLog, createTelemetryRoutes, landingHtml, renderPrometheusMetrics, resolveTelemetryConfig, diagnosticLogCapacity } from "../telemetry"
+import { detectSupervision } from "./supervision"
 import type { RequestMetric } from "../telemetry"
 import { canRecoverCapturedToolUses, canRecoverUncapturedToolUses, isStreamedToolBlockComplete, type StreamedToolBlockRecord, classifyError, extractSdkTermination, formatSdkTermination, classifyResumeRefusal, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError, isAccountFailoverError, isQuotaRefusal, isOutputTokenCapExceeded } from "./errors"
 import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, readStoredCredentialPresence, getAuthRenewalStatus, resolveRenewalWarnDays, type CredentialStore } from "./tokenRefresh"
@@ -95,7 +96,7 @@ import { runTransformHook, buildPipeline, createRequestContext } from "./transfo
 import { getAdapterTransforms } from "./transforms/registry"
 import { loadPlugins, getActiveTransforms } from "./plugins/loader"
 import type { LoadedPlugin } from "./plugins/types"
-import { resolveProfile, listProfiles, setActiveProfile, getActiveProfileId, getEffectiveProfiles, restoreActiveProfile, type ResolvedProfile } from "./profiles"
+import { resolveProfile, listProfiles, setActiveProfile, getActiveProfileId, getEffectiveProfiles, restoreActiveProfile, invalidateDiskProfileCache, type ResolvedProfile } from "./profiles"
 import {
   getRoutingMode,
   classifyRouteKind,
@@ -124,7 +125,7 @@ import {
   retryAfterBodyFields,
   OVERLOADED_RETRY_AFTER_SECONDS,
 } from "./retryAfter"
-import { getSetting, setSetting } from "./settings"
+import { getSetting, setSetting, TELEMETRY_SETTING_LIMITS } from "../settings"
 import { filterBetasForProfile, getBetaPolicyFromEnv } from "./betas"
 import { createFileChangeHook, extractFileChangesFromMessages, formatFileChangeSummary, type FileChange } from "./fileChanges"
 import { detectTokenAnomalies, formatAnomalyAlerts, type TokenSnapshot } from "./tokenHealth"
@@ -7642,6 +7643,93 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return c.json({ success: true })
   })
 
+  /**
+   * Where telemetry is kept and for how long.
+   *
+   * Unlike every other setting served here, these take effect only on the next
+   * start: the stores are constructed once and swapping one out from under
+   * in-flight writes is not something a settings form should be able to do. So
+   * the response reports THREE states rather than one, and a UI that collapses
+   * them is back to implying a change already landed:
+   *
+   *   `saved`     what is written in settings.json — what the form shows
+   *   `wanted`    what a start right now would use, env precedence applied
+   *   `effective` what the running stores actually are
+   *
+   * `pendingRestart` names the keys where `wanted` and `effective` disagree,
+   * and `supervision.restartCommand` is how to close that gap on this machine.
+   */
+  app.get("/settings/api/telemetry", (c) => {
+    const wanted = resolveTelemetryConfig()
+    const live = telemetryStore.describe()
+    const pendingRestart: string[] = []
+    if (wanted.persist !== (live.kind === "sqlite")) {
+      // With the backend itself pending, comparing a retention against a ring
+      // buffer's capacity compares two different things; the flip is the news.
+      pendingRestart.push("telemetryPersist")
+    } else if (wanted.persist) {
+      if (live.retentionDays !== undefined && wanted.retentionDays !== live.retentionDays) {
+        pendingRestart.push("telemetryRetentionDays")
+      }
+    } else {
+      if (live.capacity !== undefined && wanted.telemetrySize !== live.capacity) {
+        pendingRestart.push("telemetrySize")
+      }
+      if (diagnosticLogCapacity !== null && wanted.diagnosticLogSize !== diagnosticLogCapacity) {
+        pendingRestart.push("diagnosticLogSize")
+      }
+    }
+    return c.json({
+      saved: {
+        telemetryPersist: getSetting("telemetryPersist") ?? null,
+        telemetryRetentionDays: getSetting("telemetryRetentionDays") ?? null,
+        telemetrySize: getSetting("telemetrySize") ?? null,
+        diagnosticLogSize: getSetting("diagnosticLogSize") ?? null,
+      },
+      wanted,
+      effective: { ...live, diagnosticLogCapacity },
+      // A saved value that an env var outranks would otherwise sit in the form
+      // looking like it applies. The DB path has no saved counterpart at all.
+      envOverride: {
+        telemetryPersist: env("TELEMETRY_PERSIST") !== undefined,
+        telemetryRetentionDays: env("TELEMETRY_RETENTION_DAYS") !== undefined,
+        telemetrySize: env("TELEMETRY_SIZE") !== undefined,
+        diagnosticLogSize: env("DIAGNOSTIC_LOG_SIZE") !== undefined,
+        telemetryDb: env("TELEMETRY_DB") !== undefined,
+      },
+      pendingRestart,
+      supervision: detectSupervision(),
+      limits: TELEMETRY_SETTING_LIMITS,
+    })
+  })
+
+  app.put("/settings/api/telemetry", async (c) => {
+    let body: Record<string, unknown>
+    try { body = await c.req.json() as Record<string, unknown> } catch { return c.json({ error: "Invalid JSON" }, 400) }
+
+    if (body.telemetryPersist !== undefined) {
+      if (body.telemetryPersist !== null && typeof body.telemetryPersist !== "boolean") {
+        return c.json({ error: "telemetryPersist must be a boolean, or null to unset" }, 400)
+      }
+      setSetting("telemetryPersist", body.telemetryPersist ?? undefined)
+    }
+
+    for (const key of ["telemetryRetentionDays", "telemetrySize", "diagnosticLogSize"] as const) {
+      const value = body[key]
+      if (value === undefined) continue
+      if (value === null) { setSetting(key, undefined); continue }
+      const limit = TELEMETRY_SETTING_LIMITS[key]
+      if (typeof value !== "number" || !Number.isInteger(value) || value < limit.min || value > limit.max) {
+        return c.json({ error: `${key} must be an integer between ${limit.min} and ${limit.max}, or null to unset` }, 400)
+      }
+      setSetting(key, value)
+    }
+
+    const wanted = resolveTelemetryConfig()
+    plog(`[PROXY] Telemetry settings updated: persist=${wanted.persist} retention=${wanted.retentionDays}d size=${wanted.telemetrySize} logSize=${wanted.diagnosticLogSize} (applies on restart)`)
+    return c.json({ success: true, restartRequired: true, supervision: detectSupervision() })
+  })
+
   app.get("/settings/api/pricing", (c) => {
     const { BUILTIN_MODEL_PRICING } = require("../telemetry/pricing") as typeof import("../telemetry/pricing")
     const { getPricingOverrides } = require("../telemetry/pricingStore") as typeof import("../telemetry/pricingStore")
@@ -7956,6 +8044,41 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     })
     plog(`[PROXY] Active profile switched to: ${body.profile} (from ${previousProfile ?? "unset"}, ua: ${(c.req.header("user-agent") || "unknown").slice(0, 60)}) (session + rate-limit caches cleared)`)
     return c.json({ success: true, activeProfile: body.profile })
+  })
+
+  app.post("/profiles/rename", async (c) => {
+    let body: { from?: string; to?: string }
+    try {
+      body = await c.req.json() as { from?: string; to?: string }
+    } catch {
+      return c.json({ error: "Invalid JSON in request body" }, 400)
+    }
+    if (!body.from || !body.to) {
+      return c.json({ error: "Missing 'from' or 'to' in request body" }, 400)
+    }
+    if (envBool("CREDENTIALS_READONLY")) {
+      return c.json({ error: "MERIDIAN_CREDENTIALS_READONLY=1 — this instance may not modify credentials." }, 403)
+    }
+    const { applyProfileRename } = await import("./profileRename")
+    const result = applyProfileRename(body.from, body.to)
+    if (!result.ok) {
+      return c.json({ error: result.hint ? `${result.error} ${result.hint}` : result.error }, 400)
+    }
+    // The renamed profile is on disk now; drop the TTL cache so this caller's
+    // very next /profiles/list shows the new name instead of its own stale one.
+    invalidateDiskProfileCache()
+    // applyProfileRename moved the persisted pointer; this process holds its
+    // own copy in memory and has to be told as well.
+    if (getActiveProfileId() === body.from) setActiveProfile(body.to)
+    claudeLog("profile.renamed", {
+      from: result.from,
+      to: result.to,
+      aliases: result.aliases,
+      userAgent: c.req.header("user-agent")?.slice(0, 120) ?? null,
+      origin: c.req.header("origin") ?? c.req.header("referer")?.slice(0, 120) ?? null,
+    })
+    plog(`[PROXY] Profile renamed: ${result.from} -> ${result.to} (still answers to: ${result.aliases.join(", ")})`)
+    return c.json({ success: true, from: result.from, to: result.to, aliases: result.aliases })
   })
 
   // --- Plugin management routes ---

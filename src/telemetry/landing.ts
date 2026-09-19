@@ -5,10 +5,13 @@
  * (usage + est. cost, click to switch the active profile), and a compact
  * 24h traffic strip. Site chrome (logo, nav, status) lives in the shared
  * header from profileBar.ts. Fetches /health, /telemetry/summary,
- * /v1/usage/quota/all and /profiles/list client-side for live data.
+ * /v1/usage/quota/all, /profiles/list and /settings/api/routing client-side for live data.
  */
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
+import { reorderClientJs, reorderCss, reorderLiveRegionHtml } from "./profileOrder"
+import { DEFAULT_PROFILE_SORT, PROFILE_SORT_MODES } from "./profileSort"
+import { FADE_FROM, GENERAL_WINDOW_TYPES, SPENT_AT } from "./profileSpent"
 
 export const landingHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -41,6 +44,34 @@ export const landingHtml = `<!DOCTYPE html>
   .profile-card.switchable { cursor: pointer; }
   .profile-card.switchable:hover { border-color: var(--accent); }
   .profile-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+  /* Spent accounts recede. --spend-fade is set per card (0..1) from the
+     shared classifier; hovering restores the card so a dimmed one can still
+     be read. An account that needs a login is NOT dimmed — it needs
+     attention, not fading, so it keeps full contrast and turns red.
+
+     The fade is on the card's CONTENTS and never on the card, because
+     filter and opacity apply to an element's OWN border and box-shadow.
+     Fading .profile-card therefore greyed out the accent ring on
+     .profile-card.active - the one mark on the page saying which account is
+     serving requests - so the active profile became unfindable the moment it
+     passed 95%, which is precisely when somebody comes looking for it. A
+     descendant cannot undo an ancestor's filter or opacity, so scoping the
+     fade to the children is the only thing that leaves the ring alone; the
+     "Active" pill sits inside those contents and fades with them. */
+  .profile-card.spend-fading > *, .profile-card.spend-spent > * {
+    filter: grayscale(var(--spend-fade, 0));
+    opacity: calc(1 - 0.55 * var(--spend-fade, 0));
+    transition: filter 0.2s, opacity 0.2s; }
+  .profile-card.spend-fading:hover > *, .profile-card.spend-spent:hover > * { filter: none; opacity: 1; }
+  .profile-card.needs-login { border-color: var(--red); }
+  .profile-card.needs-login .prof-dot { background: var(--red); }
+  .spend-pill { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--muted); background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1px 8px; }
+  .spend-pill.needs-login { color: var(--red); background: rgba(248,81,73,0.12);
+    border-color: rgba(248,81,73,0.35); }
+  ${reorderCss}
   .profile-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
   .profile-name { font-size: 13px; font-weight: 600; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px; }
   .profile-name .prof-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
@@ -87,6 +118,19 @@ export const landingHtml = `<!DOCTYPE html>
   .section-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase;
     letter-spacing: 1px; margin-bottom: 12px; }
 
+  /* Tabs rather than a dropdown: the current order stays legible without
+     opening anything, which is the whole job of this page. */
+  .section-head { display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin-bottom: 12px; }
+  .section-head .section-title { margin-bottom: 0; }
+  .sort-tabs { display: flex; gap: 2px; flex-shrink: 0; }
+  .sort-tab { background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); font-family: inherit; font-size: 11px; font-weight: 500;
+    letter-spacing: 0.3px; padding: 2px 8px 3px; cursor: pointer; }
+  .sort-tab:hover { color: var(--text); }
+  .sort-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .sort-tab:focus-visible { outline: none; color: var(--accent); border-bottom-color: var(--accent); }
+
   .footer { margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border);
     font-size: 11px; color: var(--muted); text-align: center; }
   .footer a { color: var(--accent); text-decoration: none; }
@@ -97,14 +141,15 @@ export const landingHtml = `<!DOCTYPE html>
 ` + profileBarHtml + `
 <div class="container">
   <div id="content"><div style="color:var(--muted);padding:40px;text-align:center">Loading…</div></div>
+  ${reorderLiveRegionHtml}
 </div>
 <script>
 function ms(v){if(v==null||v===0)return '—';return v<1000?v+'ms':(v/1000).toFixed(1)+'s'}
-function esc(s){return String(s).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]})}
+function esc(s){return String(s).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]})}
 function usd(v){if(v==null)return '—';if(v>0&&v<0.01)return '$'+v.toFixed(4);if(v<100)return '$'+v.toFixed(2);return '$'+Math.round(v).toLocaleString()}
 
 var WIN_LABELS={five_hour:'5h',seven_day:'7d',seven_day_opus:'7d Opus',seven_day_sonnet:'7d Sonnet',seven_day_fable:'7d Fable',seven_day_oauth_apps:'7d Apps',seven_day_cowork:'7d Cowork',seven_day_omelette:'7d Omelette'};
-function winLabel(t){if(WIN_LABELS[t])return WIN_LABELS[t];return t.replace(/^seven_day_/,'7d ').replace(/_/g,' ').replace(/\b\w/g,function(c){return c.toUpperCase()})}
+function winLabel(t){if(WIN_LABELS[t])return WIN_LABELS[t];return t.replace(/^seven_day_/,'7d ').replace(/_/g,' ').replace(/\\b\\w/g,function(c){return c.toUpperCase()})}
 function utilColor(u){return u>=0.85?'var(--red)':u>=0.6?'var(--yellow)':'var(--green)'}
 // Mirrors computeWeeklyPace in src/telemetry/profileUsage.ts (unit-tested
 // there): actual vs expected (even) consumption at this point in the 7-day
@@ -131,6 +176,86 @@ function paceColor(pc){return pc.status==='over'?'var(--red)':pc.status==='ahead
 
 function resetIn(ts){if(ts==null)return '';var d=ts-Date.now();if(d<=0)return 'resetting…';var m=Math.ceil(d/60000);if(m<60)return 'in '+m+'m';var h=Math.floor(m/60);if(h<24)return 'in '+h+'h'+(m%60?' '+(m%60)+'m':'');var days=Math.floor(h/24);return 'in '+days+'d'+(h%24?' '+(h%24)+'h':'')}
 
+// Inlined from src/telemetry/profileSpent.ts, unit-tested in
+// profile-spent.test.ts — same arrangement as weeklyPace above.
+var GENERAL_WINDOW_TYPES=${JSON.stringify(GENERAL_WINDOW_TYPES)};
+var FADE_FROM=${FADE_FROM};
+var SPENT_AT=${SPENT_AT};
+function isUnusable(p){if(p.loggedIn===false)return true;return p.error==='no_token'}
+function generalUtilization(windows){
+  var worst=null;
+  for(var i=0;i<(windows||[]).length;i++){
+    var w=windows[i];
+    if(GENERAL_WINDOW_TYPES.indexOf(w.type)<0)continue;
+    if(w.utilization==null||!isFinite(w.utilization))continue;
+    var c=Math.max(0,Math.min(1,w.utilization));
+    if(worst==null||c>worst)worst=c;
+  }
+  return worst;
+}
+function computeProfileSpend(p){
+  if(isUnusable(p))return {fraction:1,state:'spent',fade:0,reason:'unusable'};
+  var f=generalUtilization(p.windows);
+  if(f==null)return {fraction:null,state:'unknown',fade:0,reason:null};
+  if(f>=SPENT_AT)return {fraction:f,state:'spent',fade:1,reason:'usage'};
+  if(f>=FADE_FROM)return {fraction:f,state:'fading',fade:(f-FADE_FROM)/(SPENT_AT-FADE_FROM),reason:null};
+  return {fraction:f,state:'available',fade:0,reason:null};
+}
+
+// Inlined from src/telemetry/profileSort.ts, unit-tested in
+// profile-sort.test.ts.
+var PROFILE_SORT_MODES=${JSON.stringify(PROFILE_SORT_MODES)};
+var viewSort=${JSON.stringify(DEFAULT_PROFILE_SORT)};
+function sortProfilesForView(items,mode,spentOf){
+  var list=items.slice();
+  if(mode==='configured')return list;
+  var direction=mode==='spent-desc'?-1:1;
+  return list
+    .map(function(item,index){return {item:item,index:index,spent:spentOf(item)}})
+    .sort(function(a,b){
+      if(a.spent==null||b.spent==null){
+        if(a.spent==null&&b.spent==null)return a.index-b.index;
+        return a.spent==null?1:-1;
+      }
+      if(a.spent!==b.spent)return (a.spent-b.spent)*direction;
+      return a.index-b.index;
+    })
+    .map(function(entry){return entry.item});
+}
+function sortTabs(count){
+  if(count<2)return '';
+  var out='';
+  for(var i=0;i<PROFILE_SORT_MODES.length;i++){
+    var m=PROFILE_SORT_MODES[i];var on=m.id===viewSort;
+    out+='<button type="button" class="sort-tab'+(on?' active':'')+'" data-sort="'+esc(m.id)+'"'
+      +' title="'+esc(m.title)+'" aria-pressed="'+(on?'true':'false')+'">'+esc(m.label)+'</button>';
+  }
+  return '<div class="sort-tabs" role="group" aria-label="Sort accounts">'+out+'</div>';
+}
+
+// Re-sorting must not wait for the next 10s poll, so the last payload is
+// kept and re-rendered from memory. The choice is a view preference and is
+// never sent to the server — the saved pool order (/settings) is untouched.
+var SORT_STORAGE_KEY='meridian.accountSort';
+var lastData=null;
+function readStoredSort(){
+  try{
+    var stored=localStorage.getItem(SORT_STORAGE_KEY);
+    for(var i=0;i<PROFILE_SORT_MODES.length;i++)if(PROFILE_SORT_MODES[i].id===stored)return stored;
+  }catch(_){/* storage blocked (private mode) — the default is fine */}
+  return null;
+}
+function setViewSort(mode){
+  if(mode===viewSort)return;
+  var refocus=!!(document.activeElement&&document.activeElement.closest&&document.activeElement.closest('.sort-tab'));
+  viewSort=mode;
+  try{localStorage.setItem(SORT_STORAGE_KEY,mode)}catch(_){/* a lost preference is not worth failing over */}
+  if(lastData)render(lastData[0],lastData[1],lastData[2],lastData[3]);
+  if(refocus){var el=document.querySelector('.sort-tab[data-sort="'+mode+'"]');if(el)el.focus()}
+}
+
+${reorderClientJs}
+
 function introSection(h){
   var meta=[];
   if(h.auth&&h.auth.loggedIn)meta.push(esc(h.auth.email||'')+(h.auth.subscriptionType?' ('+esc(h.auth.subscriptionType)+')':''));
@@ -147,15 +272,14 @@ function profileSection(q,s,pl,h){
   var byProfile=(s&&s.costEstimate&&s.costEstimate.byProfile)||{};
   var quotaByProfile={};
   var spentByProfile={};
-  if(q&&Array.isArray(q.profiles))for(var i=0;i<q.profiles.length;i++){var qid=q.profiles[i].id||q.profiles[i].profile||'default';quotaByProfile[qid]=q.profiles[i].windows||[];if(q.profiles[i].spent)spentByProfile[qid]=q.profiles[i].spent}
+  if(q&&Array.isArray(q.profiles))for(var i=0;i<q.profiles.length;i++){var qid=q.profiles[i].id||q.profiles[i].profile||'default';quotaByProfile[qid]=q.profiles[i];if(q.profiles[i].spent)spentByProfile[qid]=q.profiles[i].spent}
   var profs=[];var seen={};
   var configured=(pl&&Array.isArray(pl.profiles))?pl.profiles:[];
   var multi=configured.length>1;
-  if(configured.length>0){
-    // Real profiles exist: show exactly those. Traffic that predates
+  if(configured.length>0){\n    // Real profiles exist: show exactly those. Traffic that predates
     // per-profile attribution (the synthetic "default" bucket) still
     // counts in the totals strip but doesn't render as a fake account.
-    for(var i=0;i<configured.length;i++){var p=configured[i];profs.push({id:p.id,label:p.id,type:p.type,isActive:!!p.isActive,configured:true});seen[p.id]=1}
+    for(var i=0;i<configured.length;i++){var p=configured[i];profs.push({id:p.id,label:p.id,type:p.type,isActive:!!p.isActive,loggedIn:p.loggedIn,configured:true});seen[p.id]=1}
   }else{
     // Single-account setup: one card, labeled with the logged-in email.
     var email=(h&&h.auth&&h.auth.loggedIn&&h.auth.email)||'';
@@ -163,10 +287,22 @@ function profileSection(q,s,pl,h){
     for(var k in byProfile){if(!seen[k])profs.push({id:k,label:k==='default'?(email||'account'):k,configured:false});seen[k]=1}
   }
   if(profs.length===0)return '';
+  // The persisted order is the base order everywhere. /profiles writes it;
+  // this page read config order instead, so the two disagreed after a drag.
+  profs=meridianReorder.sortProfiles(profs);
+  function spentOf(p){
+    var quota=quotaByProfile[p.id]||{};
+    return computeProfileSpend({windows:quota.windows,error:quota.error,loggedIn:p.loggedIn}).fraction;
+  }
+  profs=sortProfilesForView(profs,viewSort,spentOf);
+  var reorderable=multi&&!meridianReorder.envPinned()&&viewSort==='configured';
   var cards='';
+  var pos=0;
   for(var i=0;i<profs.length;i++){
     var p=profs[i];var cost=byProfile[p.id];
-    var wins=(quotaByProfile[p.id]||[]).filter(function(w){return w.utilization!=null});
+    var quota=quotaByProfile[p.id]||{};
+    var wins=(quota.windows||[]).filter(function(w){return w.utilization!=null});
+    var spend=computeProfileSpend({windows:quota.windows,error:quota.error,loggedIn:p.loggedIn});
     if(!p.configured&&wins.length===0&&!cost)continue;
     var rows='';
     for(var j=0;j<wins.length;j++){
@@ -179,11 +315,10 @@ function profileSection(q,s,pl,h){
     var weekly=null;
     for(var j=0;j<wins.length;j++){if(wins[j].type==='seven_day')weekly=wins[j]}
     var pc=weekly?weeklyPace(weekly.utilization,weekly.resetsAt):null;
-    if(pc){
-      // Visual actual-vs-expected: fill = actual usage (status-colored),
+    if(pc){\n      // Visual actual-vs-expected: fill = actual usage (status-colored),
       // tick marker = where even pace would be. The gap IS the pace.
-      var paceTip=paceText(pc)+' \u00b7 '+pc.actual+'% used vs '+pc.expected+'% expected'+(pc.proj!=null?' \u00b7 ~'+pc.proj+'% by reset':'');
-      var deltaLabel=pc.status==='over'?(pc.proj!=null?pc.proj+'%':'100%'):(pc.delta>=0?'+':'\u2212')+Math.abs(pc.delta)+'%';
+      var paceTip=paceText(pc)+' · '+pc.actual+'% used vs '+pc.expected+'% expected'+(pc.proj!=null?' · ~'+pc.proj+'% by reset':'');
+      var deltaLabel=pc.status==='over'?(pc.proj!=null?pc.proj+'%':'100%'):(pc.delta>=0?'+':'−')+Math.abs(pc.delta)+'%';
       rows+='<div class="usage-row pace-row" title="'+paceTip+'"><span class="w-label">pace</span>'
         +'<div class="w-bar"><div class="w-fill" style="width:'+Math.min(pc.actual,100)+'%;background:'+paceColor(pc)+'"></div>'
         +'<div class="pace-marker" style="left:'+Math.min(pc.expected,100)+'%" title="expected at even pace ('+pc.expected+'%)"></div></div>'
@@ -197,14 +332,12 @@ function profileSection(q,s,pl,h){
     var isActivePriority=pl&&pl.routing==='active+priority';
     var switchable=multi&&p.configured&&!p.isActive&&!isPriority;
     var badge=isPriority?'':p.isActive?'<span class="active-pill">Active</span>':switchable?'<span class="switch-hint">Click to activate</span>':'';
-    if(isPriority||isActivePriority){
-      var orderIdx=(pl.profileOrder||[]).indexOf(p.id);
+    if(isPriority||isActivePriority){\n      var orderIdx=(pl.profileOrder||[]).indexOf(p.id);
       if(orderIdx>=0)badge+='<span class="pool-chip">'+(isActivePriority?'#'+(orderIdx+1)+' fallback':'#'+(orderIdx+1)+' in pool')+'</span>';
       var exh=(pl.exhausted||[]).filter(function(e){return e.id===p.id})[0];
       // Suppressed when a refusal is being reported below: both say the same
       // thing, and the banner says it better.
-      if(exh&&!spentByProfile[p.id]){
-        // A billing refusal has no reset to wait for — the pool re-probes on the
+      if(exh&&!spentByProfile[p.id]){\n        // A billing refusal has no reset to wait for — the pool re-probes on the
         // same timer, but nothing changes until a human fixes the account.
         // Showing it as 'resets in 9m' promises a recovery that never comes.
         badge+=exh.reason==='billing_error'
@@ -214,8 +347,7 @@ function profileSection(q,s,pl,h){
     }
     var sp=spentByProfile[p.id];
     var spentBanner='';
-    if(sp){
-      var spBucket=(sp.diagnosis&&sp.diagnosis.bucket)?winLabel(sp.diagnosis.bucket):'its limit';
+    if(sp){\n      var spBucket=(sp.diagnosis&&sp.diagnosis.bucket)?winLabel(sp.diagnosis.bucket):'its limit';
       var spGuess=(sp.diagnosis&&sp.diagnosis.reported)?'':' (guess)';
       badge+=' <span class="pool-chip exhausted">out of '+esc(spBucket+spGuess)+'</span>';
       // A full-width line immediately above the usage bars, not a chip beside
@@ -227,14 +359,26 @@ function profileSection(q,s,pl,h){
         +(sp.until?', back '+resetIn(sp.until):'')
         +'<div class="spent-banner-sub">figures below are the last successful read, not live</div></div>';
     }
-    cards+='<div class="profile-card'+(p.isActive?' active':'')+(switchable?' switchable':'')+'"'+(switchable?' data-profile="'+esc(p.id)+'" role="button" tabindex="0"':'')+'>'
-      +'<div class="profile-head"><span class="profile-name"><span class="prof-dot"></span>'+esc(p.label||p.id)+' '+badge+'</span>'
+    if(spend.reason==='unusable')badge+=' <span class="spend-pill needs-login">needs login</span>';
+    else if(spend.state==='spent')badge+=' <span class="spend-pill">spent</span>';
+    var spendClass=spend.reason==='unusable'?' needs-login':spend.fade>0?' spend-'+spend.state:'';
+    var spendStyle=spend.fade>0?' style="--spend-fade:'+spend.fade.toFixed(2)+'"':'';
+    var spendTip=spend.reason==='unusable'?' title="Cannot serve requests \u2014 run: meridian profile login '+esc(p.id)+'"'
+      :spend.fraction!=null&&spend.fade>0?' title="'+Math.round(spend.fraction*100)+'% of this account\u2019s 5h / 7d allowance is used"':'';
+    var draggable=reorderable&&p.configured;
+    cards+='<div class="profile-card'+(p.isActive?' active':'')+(switchable?' switchable':'')+spendClass+'"'+spendStyle+spendTip
+      +(p.configured?' data-id="'+esc(p.id)+'" data-index="'+pos+'"':'')
+      +(switchable?' data-profile="'+esc(p.id)+'" role="button" tabindex="0"':'')+'>'
+      +'<div class="profile-head"><span class="profile-name">'+(draggable?meridianReorder.handleHtml(p.id,pos,profs.length):'')+'<span class="prof-dot"></span>'+esc(p.label||p.id)+' '+badge+'</span>'
       +'<span class="profile-cost">'+usd(cost?cost.estimatedUsd:0)+'</span></div>'
       +'<div class="profile-sub">'+(cost?cost.requests+' request'+(cost.requests===1?'':'s')+' · est. API value · 24h':'no traffic · 24h')+'</div>'
       +spentBanner+rows+'</div>';
+    if(p.configured)pos++;
   }
   if(!cards)return '';
-  return '<div class="section"><div class="section-title">'+(profs.length===1?'Account':'Accounts')+'</div><div class="profile-grid">'+cards+'</div></div>';
+  return '<div class="section"><div class="section-head"><div class="section-title">'+(profs.length===1?'Account':'Accounts')+'</div>'+sortTabs(profs.length)+'</div>'
+    +(multi?meridianReorder.noteHtml(reorderable):'')
+    +'<div class="profile-grid">'+cards+'</div></div>';
 }
 
 function strip(items){
@@ -247,12 +391,14 @@ function strip(items){
 
 async function refresh(){
   try{
-    const [health,stats,quota,profiles]=await Promise.all([
+    const [health,stats,quota,profiles,routing]=await Promise.all([
       fetch('/health').then(r=>r.json()),
       fetch('/telemetry/summary?window=86400000').then(r=>r.json()),
       fetch('/v1/usage/quota/all').then(r=>r.json()).catch(function(){return null}),
-      fetch('/profiles/list').then(r=>r.json()).catch(function(){return null})
+      fetch('/profiles/list').then(r=>r.json()).catch(function(){return null}),
+      fetch('/settings/api/routing').then(r=>r.json()).catch(function(){return null})
     ]);
+    meridianReorder.adopt(routing);
     render(health,stats,quota,profiles);
   }catch(e){document.getElementById('content').innerHTML='<div style="color:var(--red);padding:40px;text-align:center">Could not connect</div>'}
 }
@@ -260,6 +406,8 @@ async function refresh(){
 function tokens(v){if(v==null)return '—';if(v>=1e6)return (v/1e6).toFixed(1)+'M';if(v>=1e3)return (v/1e3).toFixed(1)+'k';return String(v)}
 
 function render(h,s,q,pl){
+  lastData=[h,s,q,pl];
+  var refocusId=meridianReorder.focusAnchor();
   let o='';
   o+=introSection(h);
 
@@ -270,8 +418,7 @@ function render(h,s,q,pl){
   // violations appear only when there is something to report.
   var tu=s.tokenUsage||{};
   var cache=tu.avgCacheHitRate!=null?Math.round(tu.avgCacheHitRate*100)+'%':'—';
-  var items=[
-    // The big number is the TOTAL — never error-colored (a red 1714 reads as
+  var items=[\n    // The big number is the TOTAL — never error-colored (a red 1714 reads as
     // 1714 failures). The error signal lives on the detail line only.
     ['Requests',String(s.totalRequests),'',s.errorCount>0?s.errorCount+' error'+(s.errorCount===1?'':'s'):'no errors',s.errorCount>0?'red':''],
     ['Tokens Out',tokens(tu.totalOutputTokens),'',tokens(tu.totalInputTokens)+' in'],
@@ -284,6 +431,7 @@ function render(h,s,q,pl){
 
   o+='<div class="footer">Meridian · <a href="https://github.com/rynfar/meridian">GitHub</a> · Built on the <a href="https://github.com/anthropics/claude-agent-sdk-typescript">Claude Agent SDK</a></div>';
   document.getElementById('content').innerHTML=o;
+  meridianReorder.restoreFocus(refocusId);
 }
 
 function switchProfile(id){
@@ -292,16 +440,26 @@ function switchProfile(id){
     .then(function(data){if(data.success){refresh();if(window.meridianHeaderRefresh)window.meridianHeaderRefresh()}})
     .catch(function(){});
 }
+// The handle sits inside a card that is itself a switch button, so without
+// this every grab of the handle would also change the active account.
+function onHandle(e){return !!(e.target.closest&&e.target.closest('.drag-handle'))}
 document.getElementById('content').addEventListener('click',function(e){
+  if(onHandle(e))return;
+  var tab=e.target.closest('.sort-tab');
+  if(tab&&tab.dataset.sort){setViewSort(tab.dataset.sort);return}
   var card=e.target.closest('.profile-card.switchable');
   if(card&&card.dataset.profile)switchProfile(card.dataset.profile);
 });
 document.getElementById('content').addEventListener('keydown',function(e){
   if(e.key!=='Enter'&&e.key!==' ')return;
+  if(onHandle(e))return;
   var card=e.target.closest('.profile-card.switchable');
   if(card&&card.dataset.profile){e.preventDefault();switchProfile(card.dataset.profile)}
 });
-refresh();setInterval(refresh,10000);
+viewSort=readStoredSort()||viewSort;
+meridianReorder.init({onSaved:refresh});
+refresh();
+setInterval(function(){if(!meridianReorder.dragging())refresh()},10000);
 ` + profileBarJs + `
 </script>
 </body>
