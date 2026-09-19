@@ -10,6 +10,9 @@
  * a spent account visible in EVERY mode.
  */
 import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test"
+import { installSdkMock } from "./sdkMock"
+import { installLoggerMock } from "./loggerMock"
+import { installMcpToolsMock } from "./mcpToolsMock"
 import { assistantMessage, resolveMockSdkSessionId } from "./helpers"
 
 let capturedEnvs: string[] = []
@@ -17,7 +20,7 @@ let failingDirs = new Set<string>()
 const DEFAULT_FAILURE = "Claude Code returned an error result: You've hit your session limit · resets 12:30am (America/Chicago)"
 let failureMessage = DEFAULT_FAILURE
 
-mock.module("@anthropic-ai/claude-agent-sdk", () => ({
+installSdkMock(() => ({
   query: (params: any) => {
     const dir = params.options?.env?.CLAUDE_CONFIG_DIR ?? "default"
     capturedEnvs.push(dir)
@@ -29,14 +32,14 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   },
   createSdkMcpServer: () => ({ type: "sdk", name: "test", instance: {} }),
   tool: () => ({}),
-}))
+}), "active-priority-integration.test.ts")
 
-mock.module("../logger", () => ({
+installLoggerMock(() => ({
   claudeLog: () => {},
   withClaudeLogContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }))
 
-mock.module("../mcpTools", () => ({
+installMcpToolsMock(() => ({
   createOpencodeMcpServer: () => ({ type: "sdk", name: "opencode", instance: {} }),
 }))
 
