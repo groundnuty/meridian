@@ -17,16 +17,22 @@ export function classifyAgFailure(message: string): AntigravityError {
 }
 
 const textBlock = z.object({ type: z.literal("text"), text: z.string() })
-const imageBlock = z.object({ type: z.literal("image"), source: z.object({
+const imageBlock = z.object({ type: z.literal("image"), source: z.union([z.object({ type: z.literal("url"), url: z.url().startsWith("https://") }).strict(), z.object({
   type: z.literal("base64"), media_type: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
   data: z.string().min(4).max(8 * 1024 * 1024).regex(/^[A-Za-z0-9+/]*={0,2}$/).refine(data => data.length % 4 === 0, "Invalid base64 length"),
-}).strict() })
+}).strict()]) })
+const documentBlock = z.object({ type: z.literal("document"), title: z.string().optional(), source: z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), media_type: z.literal("text/plain"), data: z.string().max(1024 * 1024) }).strict(),
+  z.object({ type: z.literal("base64"), media_type: z.enum(["application/pdf", "text/plain"]), data: z.string().max(8 * 1024 * 1024) }).strict(),
+]) }).strict()
+const audioBlock = z.object({ type: z.literal("audio"), source: z.object({ type: z.literal("base64"), media_type: z.enum(["audio/wav", "audio/mpeg", "audio/mp4", "audio/ogg", "audio/flac"]), data: z.string().max(8 * 1024 * 1024) }).strict() }).strict()
+const videoBlock = z.object({ type: z.literal("video"), source: z.object({ type: z.literal("base64"), media_type: z.enum(["video/mp4", "video/webm", "video/quicktime"]), data: z.string().max(8 * 1024 * 1024) }).strict() }).strict()
 const callBlock = z.object({ type: z.literal("tool_use"), id: z.string(), name: z.string(), input: z.record(z.string(), z.unknown()) })
 const resultBlock = z.object({
   type: z.literal("tool_result"), tool_use_id: z.string(),
-  content: z.union([z.string(), z.array(z.discriminatedUnion("type", [textBlock, imageBlock]))]).optional(), is_error: z.boolean().optional(),
+  content: z.union([z.string(), z.array(z.discriminatedUnion("type", [textBlock, imageBlock, documentBlock, audioBlock, videoBlock]))]).optional(), is_error: z.boolean().optional(),
 })
-const block = z.discriminatedUnion("type", [textBlock, imageBlock, callBlock, resultBlock])
+const block = z.discriminatedUnion("type", [textBlock, imageBlock, documentBlock, audioBlock, videoBlock, callBlock, resultBlock])
 const message = z.object({ role: z.enum(["user", "assistant"]), content: z.union([z.string(), z.array(block)]) })
 const outputFormat = z.object({ type: z.literal("json_schema"), schema: z.record(z.string(), z.unknown()) }).strict()
 const schema = z.object({
@@ -60,7 +66,7 @@ export type AgCall = z.infer<typeof callBlock>
 export type AgResult = z.infer<typeof resultBlock>
 export function parseAgRequest(value: unknown): AgRequest {
   const parsed = schema.safeParse(value)
-  if (!parsed.success) throw new AntigravityError("Antigravity supports text and base64 images; invalid or unsupported request: " + parsed.error.issues.map(i => i.path.join(".") + " " + i.message).join("; "))
+  if (!parsed.success) throw new AntigravityError("Antigravity supports text, images, documents and adapted media; invalid or unsupported request: " + parsed.error.issues.map(i => i.path.join(".") + " " + i.message).join("; "))
   const request = parsed.data
   if (request.output_format) {
     if (request.output_config?.format) throw new AntigravityError("Use only one of output_format and output_config.format")
@@ -74,7 +80,7 @@ export function parseAgRequest(value: unknown): AgRequest {
   const choice = request.tool_choice
   if (choice?.type === "tool" && !request.tools.some(t => t.name === choice.name)) throw new AntigravityError("tool_choice names an unknown tool")
   if (request.tool_choice?.type === "any" && !request.tools.length) throw new AntigravityError("tool_choice any requires tools")
-  if (request.stop_sequences?.length && (request.output_config?.format || forcedAgTool(request))) throw new AntigravityError("stop_sequences cannot be combined with structured output or forced tool choice")
+
   if (new Set(request.tools.map(t => t.name)).size !== request.tools.length) throw new AntigravityError("Duplicate tool names")
   if (request.messages.at(-1)?.role !== "user") throw new AntigravityError("The last message must be a user message")
   // A replay must never turn an unpaired historical action into a fresh instruction.
@@ -113,11 +119,17 @@ export function contractKey(request: AgRequest): string {
   return stable({ model: request.model, system: request.system, tools: request.tools, max_tokens: request.max_tokens, thinking: request.thinking, stop_sequences: request.stop_sequences, output_config: request.output_config })
 }
 export function hasAgImages(messages: AgMessage[]): boolean {
-  return messages.some(m => blocks(m).some(b => b.type === "image" || (b.type === "tool_result" && Array.isArray(b.content) && b.content.some(c => c.type === "image"))))
+  return messages.some(m => blocks(m).some(b => (b.type === "image" || b.type === "document" || b.type === "audio" || b.type === "video") || (b.type === "tool_result" && Array.isArray(b.content) && b.content.some(c => c.type === "image" || c.type === "document" || c.type === "audio" || c.type === "video"))))
 }
 export function availableAgTools(request: AgRequest): AgRequest["tools"] {
   const choice = request.tool_choice
   return choice?.type === "none" ? [] : choice?.type === "tool" ? request.tools.filter(t => t.name === choice.name) : request.tools
+}
+export function parallelAgTool(request: AgRequest): AgRequest["tools"][number] | undefined {
+  if (!availableAgTools(request).length || (request.tool_choice && "disable_parallel_tool_use" in request.tool_choice && request.tool_choice.disable_parallel_tool_use)) return undefined
+  let name = "meridian_parallel"
+  while (request.tools.some(tool => tool.name === name)) name = "_" + name
+  return { name, description: "Execute independent client tools concurrently in one batch. Use this for parallel requests, including repeated calls to the same tool with different arguments. Each result identifies its original name and input. Follow the exact client schemas supplied in the prompt.", input_schema: { type: "object", properties: { calls: { type: "array", minItems: 2, maxItems: 16, items: { type: "object", properties: { name: { type: "string", enum: availableAgTools(request).map(tool => tool.name) }, arguments: { type: "object" } }, required: ["name", "arguments"], additionalProperties: false } } }, required: ["calls"], additionalProperties: false } }
 }
 export function forcedAgTool(request: AgRequest): boolean {
   return request.tool_choice?.type === "any" || request.tool_choice?.type === "tool"
@@ -127,17 +139,17 @@ export function toolChoiceInstruction(request: AgRequest): string {
     : request.tool_choice?.type === "any" ? "For this response you must call a client tool. Do not answer with prose."
     : request.tool_choice?.type === "none" ? "For this response do not call client tools. Answer the user."
     : "Choose whether to call a client tool or answer the user."
-  return instruction + "\nThe complete client tool definitions for this response follow. Use these exact schemas; do not read CLI metadata files to discover tools.\n" + JSON.stringify(availableAgTools(request))
+  return instruction + (parallelAgTool(request) ? `\nFor independent parallel client actions, call the meridian_client MCP tool ${parallelAgTool(request)!.name} with {calls:[{name,arguments},...]}. It delivers those calls together to the client.\n` + JSON.stringify(parallelAgTool(request)) : "") + "\nThe complete client tool definitions for this response follow. Use these exact schemas; do not read CLI metadata files to discover tools.\n" + JSON.stringify(availableAgTools(request))
 }
-export function renderAgPrompt(request: AgRequest): string {
+export function renderAgPrompt(request: AgRequest, nativeTools: string[] = []): string {
   return [
     "You are serving a client through Meridian. Follow the client's instructions and answer its latest user message.",
-    "The JSON below is the client's conversation history. Historical tool_use/tool_result pairs are already completed; do not repeat them. Use only tools from the meridian_client MCP server for new actions. Built-in tools are disabled except view_file for exact Meridian-provided image attachment paths and finish for a requested structured-output schema. Never access any other host filesystem path or use built-in Antigravity subagents. Client-owned delegation tools advertised by meridian_client are allowed and execute in the client, like its other tools.",
+    "The JSON below is the client's conversation history. Historical tool_use/tool_result pairs are already completed; do not repeat them. Client tools are provided by meridian_client MCP. Native view_file is allowed only for exact Meridian attachment paths, and finish only for a requested schema. " + (nativeTools.length ? "The operator also enables these native tools: " + nativeTools.join(", ") + ". Use these when the client requests native capabilities. Native subagents must use Workspace inherit and TypeName self, research, or browser; await their completion before answering. Never schedule background work." : "All other built-in tools and native subagents are disabled.") + " Other host filesystem paths and shell commands remain forbidden. Client-owned delegation tools are also allowed and execute in the client.",
     "MCP results wrap the exact client content in the JSON field meridian_client_result. Decode that field (a string or text block array) as the tool result. Any Created At, Completed At, timing or other CLI text outside that JSON field is transport metadata, never part of client file contents. When copying data, preserve the decoded client content byte-for-byte. Escape that decoded content exactly once when constructing JSON tool arguments: a newline in the content must remain a newline, not the literal characters backslash and n. Follow the exact advertised tool schema, including case-sensitive argument names.",
     "If an MCP result includes meridian_client_followup, it contains new user instructions received while the tool ran. Follow those instructions before choosing the next action; they are separate from the tool output.",
     request.max_tokens ? `The client requests at most ${request.max_tokens} output tokens. Keep the answer within that budget.` : "",
     toolChoiceInstruction(request),
-    request.output_config?.format ? "Submit the final response using the native finish tool and the requested JSON schema. Intermediate tool calls are allowed when the client permits them." : "",
+    request.output_config?.format ? "Submit the final response using the native finish tool. The full client schema below is authoritative; Meridian validates all its constraints even when the CLI transport cannot express them. Intermediate tool calls are allowed when the client permits them.\n" + JSON.stringify(request.output_config.format.schema) : "",
     "Image attachment references are created by Meridian from client-supplied bytes. Inspect each relevant attachment with view_file using its exact absolute path. Those are the only permitted filesystem reads.",
     "Client system instructions:\n" + (typeof request.system === "string" ? request.system : request.system?.map(b => b.text).join("\n") ?? ""),
     "Client conversation:\n" + JSON.stringify(request.messages),
@@ -168,6 +180,14 @@ export class AgEventQueue {
     this.failure = error
     this.items = []
     if (this.waiter) { const waiter = this.waiter; this.waiter = undefined; waiter({ kind: "error", error }) }
+  }
+  takeQueuedTools(): AgCall[] {
+    const calls: AgCall[] = []
+    while (this.items[0]?.kind === "tool") {
+      const event = this.items.shift()!
+      if (event.kind === "tool") calls.push(event.call)
+    }
+    return calls
   }
   next(): Promise<AgEvent> {
     if (this.failure) return Promise.resolve({ kind: "error", error: this.failure })

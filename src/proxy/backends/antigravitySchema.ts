@@ -28,3 +28,18 @@ export function agSchemaError(validate: ValidateFunction, value: unknown): strin
   if (validate(value)) return undefined
   return JSON.stringify(validate.errors).slice(0, 4096)
 }
+
+/** Gemini's CLI transport accepts only string enums. Keep exact validation local. */
+export function agUpstreamSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const maps = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"])
+  const children = new Set(["items", "additionalItems", "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "contains", "propertyNames", "not", "if", "then", "else", "allOf", "anyOf", "oneOf", "prefixItems"])
+  const visit = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(visit)
+    if (!value || typeof value !== "object") return value
+    return Object.fromEntries(Object.entries(value).filter(([key, child]) => key !== "enum" || !Array.isArray(child) || child.every(item => typeof item === "string")).map(([key, child]) => {
+      if (maps.has(key) && child && typeof child === "object" && !Array.isArray(child)) return [key, Object.fromEntries(Object.entries(child).map(([name, nested]) => [name, visit(nested)]))]
+      return [key, children.has(key) ? visit(child) : child]
+    }))
+  }
+  return visit(schema) as Record<string, unknown>
+}

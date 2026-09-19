@@ -295,6 +295,68 @@ merged `follow-active-integration.test.ts`: unrelated tests received its
 now runs that file in its own process, retaining all of its assertions alongside
 the other isolated groups. This changes test isolation, not runtime SDK behavior.
 
+### Antigravity expanded CLI capabilities
+
+**Verified 2026-09-19, macOS arm64, official agy 1.2.7, Node 22.22.3,
+Gemini 3.8 Flash Low:**
+
+| Gate | Result and retained artifact directory |
+| --- | --- |
+| `e2e-antigravity-expansion.mjs` | Six checks: same-process random-receipt recall, both OpenAI routes as JSON/SSE, one response with two real client actions and reversed results. `meridian-agy-expansion-u07uzW`. |
+| Additional actual OpenAI tool gate | Both routes return forced function calls, consume correlated random receipts and stream the exact result. `meridian-agy-openai-tools-h0C87G`. |
+| `e2e-antigravity-media.mjs` | Five checks: random PDF content, public HTTPS image, local speech transcript, sampled video receipt, numeric-enum schema with a nonmatching stop. `meridian-agy-media-9e5X4P`. |
+| `e2e-antigravity-native-tools.mjs` | Four checks: native self subagent arithmetic, isolated browser retrieves a random local-page heading, child hook denies a disposable non-attachment file, cancellation after child invocation releases active CLI process. `meridian-agy-native-tools-XMQrEz`. Earlier production browser/guard gate: `meridian-agy-native-tools-CnTWSG`. |
+| Actual Pi 0.72.1 | Coding/error recovery, exact Unicode output, saved resume/fork, search, steering, compaction, abort/recovery; 21 HTTP requests. `meridian-agy-pi-XHdxN7`. |
+| Actual OpenCode 1.18.31 | Coding/error recovery, exact Unicode output, saved resume/fork, glob/grep and client-owned task delegation; 16 requests. `meridian-agy-opencode-NjAsOQ`. |
+| Native Electron 44.3.0 app | Nine existing flows plus new capability disclosure and separate disabled-while-running native settings. Both actual subscription routes, requests/quotas/tray, standalone restart and owned shutdown. `meridian-agy-desktop-1qiLRK`, nested `meridian-agy-e2e-b1n5y8`. |
+
+Artifacts are in the local OS temporary directory; they are not committed.
+The native browser gate used installed Chrome DevTools MCP **1.9.0** through
+`MERIDIAN_AGY_BROWSER_MCP_PATH`, with headless isolated Chrome. It did not reuse
+personal Chrome state. Media used local Poppler, ffmpeg/ffprobe, whisper.cpp 1.9.4,
+a local ggml-base model and Python 3.11 with ReportLab/Pillow. These gates consume
+the signed-in subscription; they do not use an API-key/SDK fallback.
+
+Retained failures explain the changes rather than disappearing behind reruns:
+
+- `meridian-agy-expansion-j54zOe`: direct native calls arrived serially. Added an
+  explicit atomic `meridian_parallel` MCP tool; the succeeding gate requires a
+  two-call response. `xgKAm5` failed a test assertion that searched raw SSE for
+  contiguous text; the gate now assembles deltas before comparing receipts.
+- `meridian-agy-media-5v527G`: fixture setup selected a Python without ReportLab,
+  before a model call. `E2E_PYTHON` selects the fixture interpreter explicitly.
+- `meridian-agy-native-tools-9EnS8A`: native browsing reached Chrome DevTools but
+  default personal Chrome had no DevToolsActivePort. A workspace MCP override
+  with isolated Chrome passed (`20e2YO`), then the actual adapter implementation
+  passed in `CnTWSG` and `XMQrEz`. Earlier native probes also established the
+  actual child MCP tool names and that completed invocation events use the
+  `subagent` category; the policy and telemetry parser were corrected accordingly.
+- `meridian-agy-pi-ewtigM`: an old assertion treated all retained processes as
+  abandoned tools. Health now distinguishes idle, active and pending-tool work;
+  the Pi gate requires zero active/pending work while allowing warm conversations.
+
+Collaborative-browser inspection at 1280px and 390px found a missing closing
+brace in shared `profileBarCss` from the integrated main change `dacc1b1b`.
+It incorrectly nested all following page styles. The brace is restored; actual
+browser checks confirm the provider grid, foreground color, filter, expanded
+capability details and no horizontal overflow at either width. The macOS native
+renderer uses its own shared style assembly. A painted-settings/capabilities
+check (`meridian-agy-desktop-FSEVET`, no model calls) also exposed inherited
+desktop definition-list styling; the shared capability section now overrides
+that layout so descriptions stay below their labels. The corrected native UI
+passed and was visually inspected in `meridian-agy-desktop-eZy7f8`.
+Local validation passed 4,627 tests across 15 isolated groups, typecheck, server
+build and desktop build; the final presentation adjustment also passed all six
+provider presentation tests.
+
+This evidence establishes the listed flows. It does not establish authenticated
+Linux/Windows support, native PDF/audio/video semantics, exact token counts,
+signed reasoning, arbitrary OpenAI clients, provider-independent Claude SDK
+plugins, or durable native restoration after restart. The native cancellation
+gate observes the owned CLI lifecycle, not a proof about undocumented remote
+provider work cancellation. Preserve the earlier unclassified health failure
+above; these newer successes do not identify its cause.
+
 ## Quick Start
 
 ```bash

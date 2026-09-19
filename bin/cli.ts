@@ -45,6 +45,9 @@ Environment variables:
   MERIDIAN_BACKEND                  claude (default), antigravity, or combined
   MERIDIAN_AGY_PATH                 Official agy executable (default: agy)
   MERIDIAN_AGY_ALLOW_TOOL_BRIDGE     Opt into Antigravity client-owned tools (1)
+  MERIDIAN_AGY_ALLOW_NATIVE_BROWSER  Opt into native browser actions (1)
+  MERIDIAN_AGY_BROWSER_MCP_PATH    Installed chrome-devtools-mcp 1.9.0 executable
+  MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS Opt into native subagents (1)
   MERIDIAN_PASSTHROUGH              Enable passthrough mode (tools forwarded to client)
   MERIDIAN_IDLE_TIMEOUT_SECONDS     Idle timeout in seconds (default: 120)
   MERIDIAN_PLUGIN_DIR               Plugin auto-discovery directory (default: ~/.config/meridian/plugins)

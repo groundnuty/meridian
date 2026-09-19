@@ -4,14 +4,13 @@ const { spawnSync } = require('node:child_process')
 const { readFileSync } = require('node:fs')
 const args = process.argv.slice(2)
 const emit = value => process.stdout.write(JSON.stringify(value) + '\n')
-async function main() {
+const nativePrompts = []
+async function main(inputPrompt) {
   if (args[0] === '--version') return console.log(process.env.AGY_FIXTURE_VERSION || '1.2.7')
   if (args[0] === 'models') return console.log('fixture-model\tFixture Model\nfixture-model-high\tFixture High')
   let prompt = args[args.indexOf('-p') + 1]
-  if (args.includes('--input-format')) {
-    let input = ''; for await (const chunk of process.stdin) input += chunk
-    prompt = JSON.parse(input).message.content
-  }
+  if (inputPrompt !== undefined) prompt = inputPrompt
+  nativePrompts.push(prompt)
   if (prompt === '/config') return emit({ command: { data: { config: { modelProvider: process.env.AGY_FIXTURE_API ? 'gemini' : '', useG1Credits: false } } } })
   if (prompt === '/usage') return emit({command:{data:{groups:[{name:'Gemini Models',buckets:[{id:'gemini-5h',window:'5h',remaining_fraction:0.75,reset_time:'2099-01-01T00:00:00Z'}]}]}}})
   if (prompt.includes('POLICY_PROBE')) {
@@ -73,6 +72,31 @@ async function main() {
     catch (error) { if (!String(error).includes('Invalid arguments')) throw error; rejected = true }
     if (!rejected) throw new Error('Invalid arguments reached the client')
   }
+  if (prompt.includes('MCP_BATCH') || prompt.includes('MCP_SESSIONS')) {
+    let results
+    if (prompt.includes('MCP_BATCH')) {
+      const batch = tools.find(tool => tool.name === 'meridian_parallel')
+      let invalid = false
+      try { await rpc('tools/call', { name: batch.name, arguments: { calls: [{ name: 'lookup', arguments: { key: 'a' } }, { name: 'lookup', arguments: { key: 7 } }] } }) }
+      catch (error) { if (!String(error).includes('Invalid arguments')) throw error; invalid = true }
+      if (!invalid) throw new Error('Invalid batch reached the client')
+      const params = { name: batch.name, arguments: { calls: ['a', 'b'].map(key => ({ name: 'lookup', arguments: { key } })) } }
+      results = await Promise.all([rpc('tools/call', params, 100), rpc('tools/call', params, 100)])
+    } else {
+      async function session() {
+        const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } }) })
+        await response.json(); return response.headers.get('mcp-session-id')
+      }
+      const sessions = await Promise.all([session(), session()])
+      if (!sessions[0] || !sessions[1] || sessions[0] === sessions[1]) throw new Error('Missing independent MCP sessions')
+      results = await Promise.all(sessions.map(async (session, i) => {
+        const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-session-id': session }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'lookup', arguments: { key: ['a', 'b'][i] } } }) })
+        const value = await response.json(); if (value.error) throw new Error(value.error.message); return value.result
+      }))
+    }
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: JSON.stringify(results) } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
   const history = JSON.parse(prompt.split('Client conversation:\n').at(-1))
   const lastContent = history.at(-1).content
   const replayedResults = Array.isArray(lastContent) ? lastContent.filter(b => b.type === 'tool_result') : []
@@ -87,6 +111,10 @@ async function main() {
       answer = JSON.stringify(followup)
     } else answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).meridian_client_result)).join('|')
   }
+  if (prompt.includes('NATIVE_SECOND')) {
+    if (nativePrompts.length !== 2 || prompt.includes('NATIVE_FIRST')) throw new Error('Native continuation replayed history or spawned another process')
+    answer = 'NATIVE_REUSED'
+  }
   emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: answer } })
   emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 120, output_tokens: 10, cache_read_tokens: 20 } } })
   const schemaPath = args.includes('--json-schema') && args[args.indexOf('--json-schema') + 1]
@@ -95,4 +123,9 @@ async function main() {
   if (prompt.includes('BAD_EXIT')) process.exitCode = 1
   if (prompt.includes('LINGER')) setInterval(() => {}, 1000)
 }
-main().catch(error => { console.error(error); process.exitCode = 1 })
+async function run() {
+  if (!args.includes('--input-format')) return main()
+  const lines = require('node:readline').createInterface({ input: process.stdin })
+  for await (const line of lines) await main(JSON.parse(line).message.content)
+}
+run().catch(error => { console.error(error); process.exitCode = 1 })

@@ -5,11 +5,11 @@ endpoint using the CLI's signed-in Google account. No Gemini API key, Python
 SDK, copied OAuth credential, private model endpoint, or API-key fallback is
 used. Claude remains the default backend.
 
-The supported macOS path covers text, supplied images, client-owned tools and
-structured output. Linux is preview.
-The scope is explicit: Antigravity's harness instructions remain in effect,
-`max_tokens` is advisory, and a new ordinary turn replays client history.
-Windows and arbitrary client compatibility are not established.
+The macOS path covers text, client tools, parallel delivery, warm conversation
+reuse, OpenAI routes, structured output and adapted attachments. Native browser
+and subagents have separate operator opt-ins. Linux remains preview; Windows
+transport has fixture coverage but needs authenticated platform verification.
+Antigravity's harness instructions remain in effect and `max_tokens` is advisory.
 
 ## Start
 
@@ -55,8 +55,8 @@ The hook alone is not OS sandboxing or a proof of complete isolation against CLI
 conflicting user customizations. Global CLI customizations still load. Use this
 opt-in only with a trusted local CLI installation and account configuration;
 project-scoped grants without blanket CLI auto-approval remain future work.
-Text/schema-only mode does not use the auto-approval flag. Images require the
-same explicit tool-bridge opt-in, even when the client advertises no tools.
+Text/schema-only mode without native grants does not use auto-approval. Attachments
+require the same explicit tool-bridge opt-in, even without client tools.
 
 Meridian creates a disposable workspace containing its hook and MCP config.
 It advertises the client's tools through a loopback MCP listener. When the
@@ -74,18 +74,23 @@ output budget. The result must correspond to the exact delivered tool ID.
 Changed live continuations and recently consumed duplicate results receive HTTP 409.
 Unpaired or malformed historical results receive HTTP 400. New user text
 may accompany the exact result or follow it in another user message. This steering
-continues the same pending process and is delivered separately from tool output. A batch of
-upstream calls is exposed as one client call per HTTP response, retaining all
-upstream correlations. A live result remains bound to its original process.
+continues the same pending process and is delivered separately from tool output. Independent upstream calls are coalesced into one response, preserving every
+correlation. A synthetic `meridian_parallel` MCP tool also submits 2–16 independent
+actions atomically. `disable_parallel_tool_use: true` delivers them serially. A live result remains bound to its original process.
 
-Completed ordinary turns retain no Meridian-owned session mapping. Later
-requests replay the full client history into a new CLI conversation. This makes
-completed-history edits and undo independent of undocumented native rewind
-controls, but forfeits native resume/cache affinity. History is rendered as
-explicit JSON context; it is not native role-preserving transcript import.
+Matching ordinary turns reuse the same live CLI process and send only new user
+messages. This preserves native conversation/cache affinity while that process
+lives; cache hits and quota savings remain provider-dependent. Exact history,
+model, instructions, tools and output controls must match. Edits, forks after a
+branch advances, compaction, expired processes and restarts use full history
+replay. Schema/stopped responses use fresh processes. Embedders can disable warm
+reuse with `antigravity.reuseConversations: false`. Replay is explicit JSON
+context, not native role-preserving transcript import or durable native resume.
 
-Repeated MCP request IDs reuse their original result, and conflicting reuse is
-rejected. Each turn allows at most 256 distinct MCP tool calls.
+Repeated MCP request IDs reuse their original result within their MCP session;
+conflicting reuse is rejected. Native children have independent MCP sessions. Each
+live conversation permits 256 client calls, 32 outstanding calls and 64 MCP
+sessions. Warm reuse retires long tool conversations before exhausting that budget.
 
 If the proxy or CLI dies, or the tool deadline expires, a later client request
 containing the complete tool-call/result history starts a fresh CLI conversation.
@@ -96,7 +101,7 @@ and its current subscription authorization checks. Keep that account stable when
 continuing a session.
 
 When capacity is full, Meridian may terminate and join an idle process waiting
-for a client tool before admitting a new request. Active HTTP responses are never
+for a client tool, or retaining a completed conversation, before admitting a new request. Active HTTP responses are never
 evicted. This prevents terminal tools that never return a result from occupying
 all slots until their deadlines; a late result follows the same replay path.
 A bounded process-local ledger rejects the latest 4,096 consumed result IDs and
@@ -120,9 +125,13 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_BACKEND` | `claude` | Set to `antigravity` to select Antigravity, or `combined` for both providers |
 | `MERIDIAN_AGY_PATH` | `agy` | Official CLI executable |
 | `MERIDIAN_AGY_ALLOW_TOOL_BRIDGE` | off | Explicit tool bridge permission opt-in |
+| `MERIDIAN_AGY_ALLOW_NATIVE_BROWSER` | off | Isolated native browser opt-in |
+| `MERIDIAN_AGY_BROWSER_MCP_PATH` | `chrome-devtools-mcp` | Installed Chrome DevTools MCP 1.9.0 executable |
+| `MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS` | off | Guarded native self/research subagent opt-in |
+| `MERIDIAN_AGY_WHISPER_MODEL` | unset | Local whisper.cpp model for audio transcription |
 | `MERIDIAN_AGY_MAX_CONCURRENT` | `4` | Maximum live processes; idle pending tools can yield capacity |
-| `MERIDIAN_AGY_TURN_TIMEOUT_MS` | `300000` | Entire subprocess lifetime, including tool waits |
-| `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Deadline for each delivered client tool result |
+| `MERIDIAN_AGY_TURN_TIMEOUT_MS` | `300000` | Per-turn deadline, including preprocessing and tool waits |
+| `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Pending result deadline and completed-conversation idle retention |
 
 Capacity exhaustion returns 429 with `Retry-After`. No unbounded request queue
 is created. Bodies are capped at 8 MiB; upstream stdout is capped at 16 MiB.
@@ -137,13 +146,15 @@ allowToolBridge, maxConcurrent, turnTimeoutMs, pendingToolTimeoutMs }` on
 
 ## Supported surface and limits
 
-- `POST /v1/messages` and `/messages`: text, base64 image input and tool results,
+- `POST /v1/messages` and `/messages`: text, images/documents/adapted media,
   client tools, JSON and SSE.
+- `POST /v1/chat/completions` and `/v1/responses`: explicit OpenAI subsets below.
+- `POST /v1/messages/count_tokens`: labeled planning estimate without a CLI call.
 - `GET /v1/models`: current account's CLI model slugs.
 - `GET /health`, `/readyz`, `/livez`: backend identity, capability limits and health.
-- Numeric thinking budgets, sampling controls, OpenAI routes, Claude
-  profiles, plugins, the full Claude telemetry dashboard and native persistent resume are not
-  implemented. Unsupported modeled request features fail before execution.
+- Numeric thinking budgets, sampling controls, signed reasoning, Claude-specific
+  profiles/plugins, durable Claude telemetry and durable native resume remain
+  unavailable. Unsupported modeled request features fail before execution.
 - `output_config.effort` accepts `low`, `medium`, or `high` only when it matches
   the selected model slug suffix; it is passed to the native CLI flag. Adaptive
   thinking is accepted, but no private reasoning transcript is synthesized.
@@ -155,9 +166,8 @@ allowToolBridge, maxConcurrent, turnTimeoutMs, pendingToolTimeoutMs }` on
 - CLI-reported terminal permission denial is an error even when terminal status
   says `SUCCESS`. Individual denied tool attempts may be recovered by the CLI. Interrupted or malformed streams never receive a success stop.
 - Usage is accumulated from per-step usage for each HTTP response, avoiding
-  double-counting cumulative CLI conversation totals. Cached input is subtracted
-  from CLI input before filling Anthropic `input_tokens`, and reported separately
-  as `cache_read_input_tokens`.
+  double-counting cumulative CLI conversation totals. The CLI reports uncached input and cached reads separately; Meridian preserves
+  them as `input_tokens` and `cache_read_input_tokens` without subtracting twice.
 - Fresh replay, full native prompt inheritance and account quotas can make
   this less efficient than Claude's existing resume implementation.
 
@@ -208,7 +218,8 @@ come from the account and survive proxy restarts.
 The macOS app has a Providers page, the same overview and filters, separate
 Antigravity quota windows in the menu bar, and provider selection under Settings.
 For an app-managed service, stop it, choose Claude, Antigravity, or both, then
-start it. Client tools require the separate opt-in checkbox. An attached service
+start it. Client tools, native browsing and native subagents have separate opt-in checkboxes.
+The provider card exposes capabilities and their practical limits. An attached service
 is configured by its owner. Sign into Google using the official CLI; the desktop
 app does not collect Google credentials or repurpose Claude profile login.
 
@@ -217,8 +228,10 @@ app does not collect Google credentials or repurpose Claude profile login.
 The supported macOS text/client-tools path is gated to official `agy` **1.2.7**.
 An unverified CLI update is refused before a new model process starts. Validate
 new versions with the live gates below before changing the compatibility gate.
-Linux remains preview until its actual CLI/client flow is verified; Windows is
-refused. This is a supported, bounded protocol surface, not full Claude parity.
+Linux remains preview until its actual CLI/client flow is verified. Windows
+process-tree termination and hook quoting are implemented and exercised in CI;
+normal execution stays gated until authenticated live verification. The embedder
+option `allowUnverifiedWindows: true` is solely for that acceptance gate. This is a supported, bounded protocol surface, not full Claude parity.
 
 Each new process rechecks account-provider and paid-credit settings, even when
 the model catalogue is cached. Preflight work counts toward capacity. Readiness
@@ -226,7 +239,9 @@ checks CLI configuration, not a billable model call; account quota failures are
 shown separately in provider status. A quota failure maps to HTTP 429 (or an SSE
 error) with retry guidance. Failed active requests are not automatically retried. A subsequent complete client
 tool-result request can recover through history replay.
-Successful terminal CLI output is committed only after a clean process exit.
+Schema/one-shot output is committed after clean process exit. Warm conversations
+commit a successful terminal result while retaining the official stream stdin for
+the next turn; a later process failure cannot retroactively revoke that response.
 Slow stream readers have a 1 MiB response-buffer budget; deadlines and process
 shutdown still apply. Terminal sandboxing is requested in addition to the deny
 hook, but does not claim full isolation of the CLI or all native tools.
@@ -258,10 +273,10 @@ CLI behavior references: [headless mode](https://antigravity.google/docs/cli/hea
 ## Pi and OpenCode
 
 Both clients use their own tools, permissions and saved sessions. Meridian does
-not replace their tool implementations. Completed-turn resume, forks, undo and
-compaction use the history supplied by the client; native agy persistent resume
-is still unavailable. Client-owned delegation (for example OpenCode's `task`)
-is allowed through MCP; Antigravity's built-in delegation remains denied.
+not replace their tool implementations. Matching completed turns reuse the live
+CLI; forks, undo and compaction use validated client history when replay is
+needed. Client-owned delegation (for example OpenCode's `task`) is allowed
+through MCP. Native delegation is independently gated below.
 
 These examples use standalone Antigravity on port 3457. For a combined service,
 use its port and prepend `/antigravity` to each base URL. If Meridian API-key
@@ -354,34 +369,39 @@ image/schema gates are documented below.
 ## Images, schemas and tool selection
 
 PNG, JPEG, GIF and WebP images use Anthropic base64 `image` blocks, either in a
-user message or inside `tool_result.content`. URL image sources are rejected.
+user message or inside `tool_result.content`. Public HTTPS image sources use
+`{"type":"image","source":{"type":"url","url":"https://…"}}`. Each redirect
+and DNS result is validated; loopback, private/special-use addresses, credentials
+and non-443 ports are refused. Connections pin the validated address, forward no
+account credentials, and allow at most three redirects and 6 MiB per image.
 The existing 8 MiB request limit includes base64 bytes. Meridian validates the
 encoding and media signature, writes the supplied bytes into its private turn
 workspace, and replaces them with attachment references in the CLI prompt.
 Only exact generated attachment paths are allowed through `view_file`; no
-client path or remote URL is fetched by Meridian. Files disappear when the turn
+caller filesystem path is read by Meridian. Files disappear when the turn
 process exits. The CLI can retain its own conversation records as usual.
 Actual Pi/OpenCode attachment and read-tool flows have been verified with PNGs;
 other accepted formats still depend on the selected model's vision support.
 
 `output_config.format: {"type":"json_schema","schema":{...}}` passes the
-schema unchanged to the official `--json-schema` option through a temporary
-file. Legacy `output_format` accepts the same shape; sending both is rejected.
+schema to the official `--json-schema` option through a temporary file.
+Non-string enums are omitted from native transport where Gemini rejects them,
+while the original exact schema remains in the prompt and local validator. Legacy `output_format` accepts the same shape; sending both is rejected.
 Intermediate prose is withheld, while client tool calls still pass through.
 Only the CLI's `structured_output` is returned after local schema validation and
 clean exit. Tool arguments are also validated before client delivery; invalid
 arguments return to the model for correction. Draft 7, 2019-09 and 2020-12
 schemas use request-local validators without coercion or remote reference fetches. A missing result
-fails explicitly. Native model schema restrictions still apply: Gemini rejected
-numeric enum values in live testing. Meridian returns upstream invalid-argument
-errors rather than silently relaxing the schema.
+fails explicitly. Numeric enum output has passed a live gate after this transport
+adaptation. Other upstream schema restrictions can still fail; Meridian never
+returns a result that violates the original locally validated schema.
 
 `tool_choice` accepts `auto`, `none`, `any`, or `tool` with an advertised name.
 Forced responses contain a matching tool call or fail explicitly; they never
 succeed with prose instead. The client may change tool choice when returning a
 pending result while preserving the other contract fields. Queued calls excluded
-by a new choice are rejected. `disable_parallel_tool_use` is accepted: the bridge
-already exposes one call per client response. Tools still awaiting a client result
+by a new choice are rejected. `disable_parallel_tool_use: true` opts into serial
+delivery; otherwise independent calls can share one response. Tools still awaiting a client result
 retain their process until the result, cancellation, or configured deadline;
 idle waiting processes may also be reclaimed when another request needs capacity.
 
@@ -389,7 +409,9 @@ Up to four nonempty `stop_sequences` of at most 1024 characters are enforced on
 assistant text at Meridian's response boundary. Matching spans streaming chunks,
 the sequence itself is withheld, and the owned process is terminated and joined
 before `stop_reason: "stop_sequence"` succeeds. Stops do not inspect tool arguments
-and cannot be combined with forced tool choice or structured output. Usage after
+and can accompany forced tools or structured output. Forced tools suppress prose.
+If a stop occurs inside the final serialized schema result, Meridian returns 422
+instead of truncating JSON into an invalid result. Usage after
 an early stop includes only CLI usage observed before termination. This does not
 turn the advisory `max_tokens` field into a native token cap.
 
@@ -420,26 +442,26 @@ images or client delegation are available. Truncating returned text locally woul
 not impose a native token/quota budget and could break JSON or tool arguments;
 Meridian does not claim that workaround as a hard limit.
 
-Actual unsupported surfaces remain:
+Remaining boundaries:
 
-- OpenAI Chat Completions/Responses and token-count endpoints for Antigravity.
-  Pi and OpenCode use the supported Anthropic Messages route.
-- Document/PDF, audio, video and URL-based image inputs; generated media and
-  native reasoning/signature blocks. Supplied PNG/JPEG/GIF/WebP inputs are accepted;
-  the recorded live vision evidence currently covers PNG.
-- Native persistent conversation/cache reuse. Client saved sessions, forks, undo
-  and compaction work through full history replay, with extra latency/input quota.
-- Antigravity's built-in shell, filesystem, browser and subagents through this
-  bridge. Equivalent tools supplied by Pi/OpenCode execute in those clients;
-  OpenCode's client-owned `task` delegation is verified.
-- Claude profile pools, Claude-specific plugins and full durable Claude telemetry
-  for the Google account. Shared provider navigation, quota windows and recent
-  activity work in the web UI and macOS app.
-- Arbitrary schema features rejected by the selected upstream model, text stops
-  combined with forced tools/schema output, and true parallel client-tool delivery
-  in a single response. Calls are delivered serially.
-- Windows execution and verified Linux production support. CLI versions other
-  than the verified version are refused pending compatibility testing.
+- Exact upstream token counts, hard output caps, numeric thinking budgets,
+  sampling controls and signed native reasoning are not exposed by this CLI.
+- Native attachment semantics differ from local adaptation: no native PDF
+  citations, continuous video understanding, non-speech audio or generated media.
+- Warm native reuse ends on expiry/restart; no durable native session restoration.
+- Responses storage/`previous_response_id`, arbitrary OpenAI tools/formats and
+  universal third-party client compatibility are not implemented.
+- Claude profile pools and SDK-specific plugin hooks cannot be applied to the
+  Google account. The existing plugin `RequestContext` contains Claude SDK agents,
+  hooks and settings; translating it would require a separate provider-aware
+  contract, not claiming those hooks ran. Global agy customizations still load,
+  but the bridge does not grant arbitrary plugin MCP tools. Client-owned plugins
+  run in Pi/OpenCode as usual. Antigravity uses its CLI's one signed-in account;
+  no credential copying or unofficial multi-account isolation is provided.
+- Provider navigation, quotas, request metadata and bounded native-tool activity
+  are available; durable Claude lineage/telemetry is not fabricated for agy.
+- Authenticated Linux and Windows live acceptance remains unverified. Mocked
+  cross-platform CI is transport evidence, not subscription/client evidence.
 
 Run `node scripts/e2e-antigravity-recovery.mjs` for live expiry and capacity
 reclamation checks. Recovery verification uses the actual client while replacing its backend between
@@ -453,3 +475,87 @@ E2E_AGY_RECOVERY=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-clients.mjs
 The gate checks the finished tool is not requested again, then verifies the full
 coding, saved-session and client-delegation/session flows. This establishes
 completed-history recovery, not durable exactly-once semantics or native resume.
+
+
+## OpenAI routes and token estimates
+
+Chat Completions and Responses support text, data/HTTPS images, standard function
+tools and their full-history continuations, forced/parallel tool selection,
+JSON/SSE, matching Gemini effort and JSON schemas. Responses requires full input
+history and supports `store: false`; it does not implement stored responses,
+`previous_response_id`, custom/namespaced tools or audio/video OpenAI formats.
+Unsupported fields fail before dispatch instead of being silently dropped.
+This surface is not a claim of complete Codex compatibility.
+
+`/v1/messages/count_tokens` returns `input_tokens`, `estimated: true`, the
+`x-meridian-token-count: estimate` header and an `estimation` object. It uses
+UTF-8 bytes divided by four plus an image allowance. Hidden CLI context and
+unprocessed PDF/audio/video contents are excluded and explicitly counted in
+`excluded_unprocessed_media`. It performs no fetching, rendering, transcription
+or model call. It is neither an exact tokenizer nor an upper-bound quota estimate.
+
+## Locally adapted documents, audio and video
+
+Anthropic-style `document` blocks accept text/plain (`text` or canonical
+`base64`) and application/pdf (`base64`), optionally with a title. PDFs require
+local Poppler `pdfinfo`/`pdftoppm`: 1–16 pages are rendered at up to 1600 pixels.
+Only exact rendered paths are readable by the CLI; native citations are absent.
+
+Meridian extensions `audio` and `video` use a base64 source with `media_type`.
+Audio accepts WAV/MPEG/MP4/OGG/FLAC; video accepts MP4/WebM/QuickTime. Local
+`ffprobe`/`ffmpeg` limit clips to 120 seconds. Speech uses `whisper-cli` with
+`MERIDIAN_AGY_WHISPER_MODEL` pointing to an installed whisper.cpp model. No
+transcription API or alternate subscription authentication is used. Video yields
+at most 12 frames at roughly ten-second intervals, plus a transcript if it has
+audio. Short events between frames and non-speech sounds are not preserved.
+A video with audio fails if transcription dependencies are missing, rather than
+silently omitting its sound. The same blocks work inside client tool results.
+
+All attachments require the client-tool bridge opt-in. Request bodies remain
+8 MiB; a live conversation has a 32 MiB materialization budget and 64 rendered
+images. Media preparation participates in request cancellation and deadlines.
+Missing local dependencies return actionable errors. These adapters are not
+native multimodal input APIs; the provider card labels that distinction.
+
+## Native browser and subagents
+
+Enable only the desired grants:
+
+```sh
+# Install separately; Meridian never downloads executable packages per request.
+npm install -g chrome-devtools-mcp@1.9.0
+MERIDIAN_BACKEND=antigravity \
+MERIDIAN_AGY_ALLOW_NATIVE_BROWSER=1 \
+MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS=1 meridian
+```
+
+Chrome must also be installed. `MERIDIAN_AGY_BROWSER_MCP_PATH` selects a local
+executable when it is not on the service PATH. Browser sessions use isolated,
+headless Chrome profiles through the official Chrome DevTools MCP; personal
+Chrome cookies/profile/debugging settings are untouched. The native browser
+subagent performs actions and returns its result inside agy. Native actions do
+not appear as client-owned tool calls or client permission dialogs.
+
+Native self/research subagents must inherit the guarded workspace. Browser
+subagents require the separate browser grant. File/shell tools, arbitrary new
+agent definitions, branched workspaces, background scheduling and browser file
+uploads remain denied. The actual child hook was tested to deny a disposable
+non-attachment file. This is bounded allowlisting, not a claim that a CLI hook
+is a complete OS security sandbox. `/telemetry/native-tools` exposes the latest
+500 native tool events without prompts/results. The health endpoint separates
+`processes`, `activeProcesses` and `pendingToolProcesses`; idle warm processes
+are expected and reclaimable.
+
+Additional live gates (consume the signed-in subscription):
+
+```sh
+node scripts/e2e-antigravity-expansion.mjs
+E2E_PYTHON=/path/to/python-with-reportlab-and-pillow \
+MERIDIAN_AGY_WHISPER_MODEL=/path/to/ggml-base.bin \
+node scripts/e2e-antigravity-media.mjs
+MERIDIAN_AGY_BROWSER_MCP_PATH=/path/to/chrome-devtools-mcp \
+node scripts/e2e-antigravity-native-tools.mjs
+```
+
+The media fixture also uses macOS `say`; its recorded evidence does not validate
+Linux/Windows preprocessing. See E2E.md for exact successes and retained failures.

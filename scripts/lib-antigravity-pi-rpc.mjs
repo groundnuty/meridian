@@ -68,7 +68,8 @@ export async function verifyPiSession({ binary, args, env, project, root, url, r
     await assert.rejects(access(forbidden), { code: 'ENOENT' })
     const after = await health()
     assert.equal(after.completed - before.completed, 1, 'Steering must continue the existing agy process')
-    assert.equal(after.processes, 0, 'No abandoned pending-tool process')
+    assert.equal(after.pendingToolProcesses, 0, 'No abandoned pending-tool process')
+    assert.equal(after.activeProcesses, 0, 'Completed conversations must be idle')
     report.passed.push('actual Pi steering during a tool call: same process, changed instruction, no stale write')
     console.log('PASS Pi steering')
 
@@ -83,11 +84,11 @@ export async function verifyPiSession({ binary, args, env, project, root, url, r
     const abortedIdle = wait(event => event.type === 'agent_end')
     await command('prompt', { message: 'Do not use tools. Write a detailed 10000-word explanation of graph algorithms, with many worked examples.' })
     const deadline = Date.now() + 30000
-    while ((await health()).processes === 0) { assert(Date.now() < deadline, 'Model request never became active'); await new Promise(resolve => setTimeout(resolve, 50)) }
+    while ((await health()).activeProcesses === 0) { assert(Date.now() < deadline, 'Model request never became active'); await new Promise(resolve => setTimeout(resolve, 50)) }
     await command('abort')
     await abortedIdle
     const stoppedBy = Date.now() + 10000
-    while ((await health()).processes) { assert(Date.now() < stoppedBy, 'Abort leaked an agy process'); await new Promise(resolve => setTimeout(resolve, 50)) }
+    while ((await health()).activeProcesses) { assert(Date.now() < stoppedBy, 'Abort leaked an agy process'); await new Promise(resolve => setTimeout(resolve, 50)) }
     const recovered = await prompt(`Reply exactly RECOVERED_${marker}. Do not use tools.`)
     assert(JSON.stringify(recovered).includes(`RECOVERED_${marker}`), JSON.stringify(recovered))
     report.passed.push('actual Pi abort releases active process and next prompt succeeds')

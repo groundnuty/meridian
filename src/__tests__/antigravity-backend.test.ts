@@ -1,3 +1,4 @@
+import { z } from "zod"
 import { afterEach, describe, expect, it } from "bun:test"
 import { fileURLToPath } from "node:url"
 import { createAntigravityServer } from "../proxy/backends/antigravity"
@@ -17,7 +18,7 @@ async function decode(response: Response): Promise<TestReply> { return await res
 const executable = fileURLToPath(new URL("./fixtures/agy-cli.cjs", import.meta.url))
 const closing: Array<() => Promise<void>> = []
 function fixture(options = {}) {
-  const runtime = new AntigravityRuntime({ executable, allowToolBridge: true, turnTimeoutMs: 10000, ...options })
+  const runtime = new AntigravityRuntime({ executable, reuseConversations: false, allowToolBridge: true, turnTimeoutMs: 10000, ...options })
   const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: "antigravity" }, runtime)
   closing.push(server.closeBackend)
   const send = (body: unknown, signal?: AbortSignal) => server.app.fetch(new Request("http://local/v1/messages", { method: "POST", body: JSON.stringify(body), signal }))
@@ -69,8 +70,71 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(response.status).toBe(200)
     const body = await decode(response)
     expect(body.content).toEqual([{ type: "text", text: "READY" }])
-    expect(body.usage.input_tokens).toBe(100) // CLI input includes its 20 cached tokens.
+    expect(body.usage.input_tokens).toBe(120) // CLI reports uncached input separately from cache reads.
     expect(body.usage.cache_read_input_tokens).toBe(20)
+  })
+  it("reuses an exact native conversation and replays edits without corrupting the original", async () => {
+    const { send, runtime } = fixture({ reuseConversations: true })
+    const request = { ...initial("NATIVE_FIRST"), tools: [] }
+    const first = await decode(await send(request))
+    const next = { ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: "NATIVE_SECOND" }] }
+    const second = await decode(await send(next))
+    expect(second.content[0]!.text).toBe("NATIVE_REUSED")
+    expect(runtime.reused).toBe(1)
+    expect(runtime.runs.size).toBe(1)
+    const edited = await send({ ...request, messages: [{ role: "user", content: "edited" }] })
+    expect(edited.status).toBe(200)
+    expect(runtime.reused).toBe(1)
+    expect(runtime.runs.size).toBe(2)
+  })
+  for (const path of ["/v1/chat/completions", "/v1/responses"]) {
+    it(`translates JSON and incremental SSE on ${path}`, async () => {
+      const { server } = fixture()
+      const input = path.endsWith("responses") ? { input: "Hello" } : { messages: [{ role: "user", content: "Hello" }] }
+      for (const stream of [false, true]) {
+        const response = await server.app.fetch(new Request("http://local" + path, { method: "POST", body: JSON.stringify({ model: "fixture-model", ...input, stream }) }))
+        expect(response.status).toBe(200)
+        const text = await response.text()
+        expect(text).toContain("READY")
+        expect(text).toContain(stream ? path.endsWith("responses") ? "response.completed" : "[DONE]" : path.endsWith("responses") ? '"object":"response"' : '"object":"chat.completion"')
+      }
+    })
+  }
+  it('preserves literal thinking markup in OpenAI assistant history', async () => {
+    const { server } = fixture()
+    const response = await server.app.fetch(new Request('http://local/v1/chat/completions', { method: 'POST', body: JSON.stringify({ model: 'fixture-model', messages: [{ role: 'user', content: 'First' }, { role: 'assistant', content: '<think>literal client text</think>Answer' }, { role: 'user', content: 'Next' }] }) }))
+    expect(response.status).toBe(200)
+  })
+  it("preserves forced tool calls and results through both OpenAI formats", async () => {
+    const { server } = fixture()
+    const post = async (path: string, body: unknown) => { const response = await server.app.fetch(new Request("http://local" + path, { method: "POST", body: JSON.stringify(body) })); expect(response.status, await response.clone().text()).toBe(200); return response }
+    const chat = { model: "fixture-model", messages: [{ role: "user", content: "receipt" }], tools: [{ type: "function", function: { name: "lookup", parameters: tool.input_schema } }], tool_choice: "required" }
+    const chatReply = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string().nullable(), tool_calls: z.array(z.object({ id: z.string() }).passthrough()).optional() }).passthrough() })) })
+    const responsesReply = z.object({ output: z.array(z.object({ type: z.string(), call_id: z.string().optional() }).passthrough()) })
+    const first = chatReply.parse(await (await post("/v1/chat/completions", chat)).json())
+    const message = first.choices[0]!.message
+    const answer = chatReply.parse(await (await post("/v1/chat/completions", { ...chat, tool_choice: "none", messages: [...chat.messages, message, { role: "tool", tool_call_id: message.tool_calls![0]!.id, content: "CHAT_RECEIPT" }] })).json())
+    expect(answer.choices[0]!.message.content).toBe("CHAT_RECEIPT")
+    const responses = { model: "fixture-model", input: [{ role: "user", content: "receipt" }], tools: [{ type: "function", name: "lookup", parameters: tool.input_schema }], tool_choice: "required" }
+    const initialResponse = responsesReply.parse(await (await post("/v1/responses", responses)).json())
+    const call = initialResponse.output.find((item: { type: string }) => item.type === "function_call")
+    const result = responsesReply.parse(await (await post("/v1/responses", { ...responses, tool_choice: "none", input: [...responses.input, ...initialResponse.output, { type: "function_call_output", call_id: call!.call_id, output: "RESPONSES_RECEIPT" }] })).json())
+    expect(JSON.stringify(result.output)).toContain("RESPONSES_RECEIPT")
+  })
+  it("counts tokens without starting a CLI and labels the estimate", async () => {
+    const { server, runtime } = fixture()
+    const response = await server.app.fetch(new Request("http://local/v1/messages/count_tokens", { method: "POST", body: JSON.stringify(initial()) }))
+    expect(response.headers.get("x-meridian-token-count")).toBe("estimate")
+    expect(z.object({ estimated: z.boolean() }).parse(await response.json()).estimated).toBe(true)
+    expect(runtime.cliVersion).toBe("")
+  })
+  it("combines stops with forced tools and refuses to truncate valid schema output", async () => {
+    const { send } = fixture()
+    const request = { ...initial(), stop_sequences: ["READY"], tool_choice: { type: "any" } }
+    expect((await decode(await send(request))).stop_reason).toBe("tool_use")
+    const structured = { ...initial(), tools: [], stop_sequences: ["READY"], output_config: { format: { type: "json_schema", schema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } } } }
+    expect((await send(structured)).status).toBe(422)
+    expect((await send({ ...structured, stop_sequences: ["NEVER_MATCH"] })).status).toBe(200)
   })
   it("passes reasoning effort to the official CLI flag", async () => {
     const { send } = fixture()
@@ -140,7 +204,7 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect((await send(changed)).status).toBe(409)
     const answer = await decode(await send(followup))
     expect(answer.content[0]!.text).toBe("FAILED:client-secret")
-    expect(answer.usage.input_tokens).toBe(100) // Not the earlier 100-token tool request.
+    expect(answer.usage.input_tokens).toBe(120) // Not the earlier 100-token tool request.
     expect((await send(followup)).status).toBe(409) // No duplicate execution.
     expect((await send({ ...followup, tool_choice: { type: "none" }, messages: [...followup.messages, { role: "user", content: "A new user turn with completed context" }] })).status).toBe(200)
   })
@@ -172,7 +236,7 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
   })
   it("serializes a parallel upstream batch into individually correlated client calls", async () => {
     const { send } = fixture()
-    const request = initial("PARALLEL2")
+    const request = { ...initial("PARALLEL2"), tool_choice: { type: "auto", disable_parallel_tool_use: true } }
     let messages: unknown[] = request.messages
     for (let i = 0; i < 2; i++) {
       const response = await decode(await send({ ...request, messages }))
@@ -182,6 +246,33 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     }
     const answer = await decode(await send({ ...request, messages }))
     expect(answer.content[0]!.text).toBe("value0|value1")
+  })
+  it("delivers parallel calls together and accepts reverse-order results atomically", async () => {
+    const { send, runtime } = fixture()
+    const request = initial("PARALLEL2")
+    const first = await decode(await send(request))
+    const calls = first.content.filter(block => block.type === "tool_use")
+    expect(calls).toHaveLength(2)
+    const results = calls.map((call, index) => ({ type: "tool_result", tool_use_id: call.id, content: `value${index}` })).reverse()
+    const next = { ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: results }] }
+    const answer = await decode(await send(next))
+    expect(answer.content[0]!.text).toBe("value0|value1")
+    expect(runtime.completed).toBe(1)
+    expect((await send(next)).status).toBe(409)
+  })
+  for (const mode of ['MCP_BATCH', 'MCP_SESSIONS']) it(`${mode}: atomically validates and independently correlates two actions`, async () => {
+    const { send } = fixture()
+    const request = initial(mode)
+    const first = await decode(await send(request))
+    const calls = first.content.filter(block => block.type === 'tool_use')
+    expect(calls.map(call => call.input?.key).sort()).toEqual(['a', 'b'])
+    const results = calls.map(call => ({ type: 'tool_result', tool_use_id: call.id, content: 'RESULT_' + call.input?.key })).reverse()
+    const response = await send({ ...request, messages: [...request.messages, { role: 'assistant', content: first.content }, { role: 'user', content: results }] })
+    expect(response.status).toBe(200)
+    const answer = await decode(response)
+    expect(answer.stop_reason).toBe('end_turn')
+    expect(answer.content[0]?.text).toContain('RESULT_a')
+    expect(answer.content[0]?.text).toContain('RESULT_b')
   })
   it("emits complete SSE blocks, usage, and stop events", async () => {
     const { send } = fixture()

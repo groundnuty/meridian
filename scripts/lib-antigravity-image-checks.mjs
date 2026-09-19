@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 export async function createImageFixture(root, name, { large = false } = {}) {
   const path = join(root, name + '.png')
-  const result = spawnSync('python3', ['-c', `from PIL import Image, ImageDraw, ImageFont
+  const result = spawnSync(process.env.E2E_PYTHON || 'python3', ['-c', `from PIL import Image, ImageDraw, ImageFont
 import secrets,sys
 code=secrets.token_hex(3).upper()
 large=sys.argv[2]=='large'

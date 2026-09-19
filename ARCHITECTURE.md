@@ -14,9 +14,14 @@ backend selector.
 
 `backends/antigravityProtocol.ts` owns pure validation, history identity and
 prompt rendering. `antigravityRuntime.ts` owns the official CLI subprocesses and
-loopback MCP transport. `antigravityAttachments.ts` materializes only supplied
-base64 image bytes in the disposable workspace; the hook permits exact generated
-paths. `antigravityStops.ts` is a pure incremental text-stop matcher.
+loopback MCP transport. `antigravityAttachments.ts` materializes supplied images,
+documents and adapted media in a disposable workspace; the hook permits exact
+generated paths. `antigravityUrl.ts` validates/pins public HTTPS image downloads;
+`antigravityMedia.ts` owns local ffmpeg/Whisper adaptation. `antigravityNative.ts`
+defines the separately opted-in browser/subagent policy; browser MCP uses isolated
+Chrome. `antigravityProcess.ts` contains platform quoting and process termination.
+`antigravityOpenai.ts` validates supported OpenAI subsets before shared translation;
+`antigravityTokens.ts` provides explicitly labeled, side-effect-free estimates. `antigravityStops.ts` is a pure incremental text-stop matcher.
 `antigravitySchema.ts` compiles request-local Ajv validators for client tool
 arguments and native structured results. It never fetches remote references or
 coerces client data. Tool definitions travel in the prompt as well as MCP, so
@@ -25,25 +30,30 @@ model calls do not depend on access to private CLI schema files.
 interface to Anthropic JSON/SSE. Only `server.ts` imports Hono and binds the
 public listener. Backend modules do not import Claude session or cache modules.
 
-The runtime maps contain only live requests and outstanding tool correlations,
+The runtime maps contain live/warm conversations and outstanding tool correlations,
 like `sessionTree.ts`; they are not another durable session cache. Tool calls
 remain pending inside the official CLI until their client result arrives.
 The exact pending assistant prefix also permits appended user steering, either
 beside the tool result or in subsequent user messages. New instructions travel
 in a separate MCP result envelope field; they do not become tool output and do
 not start a second process. Client-owned delegation tools follow the same MCP
-path as file tools; built-in Antigravity subagents remain blocked. Tool choice
+path as file tools. Native subagents require an independent operator grant and
+inherit the guarded workspace. MCP request identity is scoped per initialized
+session, avoiding collisions between native children. The synthetic parallel MCP
+tool validates a whole batch before delivery; reverse-order results remain correlated. Tool choice
 may change between responses without changing the remaining pending contract.
 Native schema mode permits `finish`, withholds prose and emits only the final
 structured result after clean exit. Text stops deliberately terminate and join
 the process; they are separate from native token-budget controls.
-Completed requests have no cached mapping; the next turn replays client
-history. A complete tool-call/result request without a live owner also replays,
+Completed ordinary requests retain an idle live process. Exact matching history
+and contract append only new user messages through official stream stdin. Schema
+and stop paths remain one-shot. Changed histories, compaction and expired/restarted
+processes replay full client history; no durable CLI transcript mapping is added. A complete tool-call/result request without a live owner also replays,
 allowing recovery after expiry or process restart without an extra user message.
 A bounded set of consumed tool IDs rejects recent duplicate results; a transient
 claim prevents simultaneous recovery during preflight. Neither is a durable
 session cache or exactly-once ledger. Admission may reclaim a process waiting
-idle for a tool result, joining it before replacement; active responses are never
+idle for a tool result or another user turn, joining it before replacement; active responses are never
 evicted. A late completed result can use the same replay path. Native Claude transcript lifecycle and lineage persistence cannot be
 applied to Antigravity. `ProxyInstance.close()` joins owned subprocesses;
 direct fetch embedders use `closeBackend()`.

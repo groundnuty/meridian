@@ -1,3 +1,5 @@
+import { estimateAgTokens } from "./antigravityTokens"
+import { agOpenai } from "./antigravityOpenai"
 import { AgTextStops } from "./antigravityStops"
 import { providerPageHtml } from '../../telemetry/providerPage'
 import { providerOverview, type ProviderUsage } from '../../telemetry/providerView'
@@ -47,22 +49,21 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     // A validated complete history is also a stateless recovery request. Only
     // correlate against live processes; never re-execute a tool on the client's behalf.
     if (owners.length) {
-      if (results.length !== 1) throw new AntigravityError("Antigravity requires one requested tool result per continuation", 409)
       const result = results[0]!
       const run = runtime.toolOwners.get(result.tool_use_id)
       if (!run) throw new AntigravityError("Antigravity continuation contains an unknown live tool", 409)
       if (run.busy) throw new AntigravityError("Antigravity turn already has an active response", 409)
-      if (run.delivered?.id !== result.tool_use_id || run.contract !== contractKey(body) || historyKey(run.history) !== historyKey(body.messages.slice(0, suffixStart))) {
+      if (results.length !== run.delivered.length || results.some(result => !run.delivered.some(call => call.id === result.tool_use_id)) || owners.some(owner => owner !== run) || run.contract !== contractKey(body) || historyKey(run.history) !== historyKey(body.messages.slice(0, suffixStart))) {
         throw new AntigravityError("Pending Antigravity tool continuation changed its history, model, instructions or tools", 409)
       }
-      const followup = suffix.map(message => ({ ...message, content: blocks(message).filter(b => b.type === "text" || b.type === "image") })).filter(message => message.content.length > 0)
+      const followup = suffix.map(message => ({ ...message, content: blocks(message).filter(b => b.type === "text" || b.type === "image" || b.type === "document" || b.type === "audio" || b.type === "video") })).filter(message => message.content.length > 0)
       if (JSON.stringify(run.request.tool_choice) !== JSON.stringify(body.tool_choice)) {
         followup.push({ role: "user", content: [{ type: "text", text: toolChoiceInstruction(body) }] })
       }
       run.request.tool_choice = body.tool_choice
       run.busy = true
       run.history = body.messages
-      try { await run.accept(result, followup) }
+      try { await run.accept(results, followup) }
       catch (error) {
         run.busy = false
         run.abort(error instanceof Error ? error : new Error(String(error)))
@@ -87,7 +88,8 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     const body = parseAgRequest(await readBody(request))
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
     const run = await selectRun(body, request.signal)
-    const cancel = () => run.abort(new AntigravityError("Request cancelled", 499, "api_error"))
+    let completed = false
+    const cancel = () => { if (!completed) run.abort(new AntigravityError("Request cancelled", 499, "api_error")) }
     request.signal.addEventListener("abort", cancel, { once: true })
     if (request.signal.aborted) cancel()
     const started = Date.now()
@@ -115,9 +117,10 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         while (true) {
           const event = await run.queue.next()
           if (event.kind === "error") throw event.error
-          if (event.kind === "usage") { usage.input_tokens += Math.max(0, event.input - event.cache); usage.output_tokens += event.output; usage.cache_read_input_tokens += event.cache; continue }
+          if (event.kind === "usage") { usage.input_tokens += event.input; usage.output_tokens += event.output; usage.cache_read_input_tokens += event.cache; continue }
           if (event.kind === "text") {
             if (forcedAgTool(body)) continue
+            if (body.output_config?.format && body.stop_sequences?.some(stop => event.text.includes(stop))) throw new AntigravityError("A stop sequence occurs inside the structured result; truncation would violate the requested JSON schema", 422)
             const text = stops.push(event.text)
             if (text) emitText(text)
             if (!stops.matched) continue
@@ -129,19 +132,23 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           }
           if (textOpen) { emit?.("content_block_stop", { type: "content_block_stop", index: content.length - 1 }); textOpen = false }
           if (event.kind === "tool") {
-            if (body.tool_choice?.type === "none" || (body.tool_choice?.type === "tool" && body.tool_choice.name !== event.call.name)) throw new AntigravityError("Antigravity requested a tool excluded by tool_choice", 502, "api_error")
-            content.push(event.call)
+            const calls = await run.toolBatch(event.call)
+            for (const call of calls) {
+            if (body.tool_choice?.type === "none" || (body.tool_choice?.type === "tool" && body.tool_choice.name !== call.name)) throw new AntigravityError("Antigravity requested a tool excluded by tool_choice", 502, "api_error")
+            content.push(call)
             const index = content.length - 1
-            emit?.("content_block_start", { type: "content_block_start", index, content_block: { ...event.call, input: {} } })
-            emit?.("content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(event.call.input) } })
+            emit?.("content_block_start", { type: "content_block_start", index, content_block: { ...call, input: {} } })
+            emit?.("content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(call.input) } })
             emit?.("content_block_stop", { type: "content_block_stop", index })
-            run.markDelivered(event.call)
+            }
+            run.markDelivered(calls)
             run.history = [...run.history, { role: "assistant", content }]
             reason = "tool_use"
           }
           break
         }
         if (forcedAgTool(body) && reason !== "tool_use") throw new AntigravityError("Antigravity completed without the required tool call", 502, "api_error")
+        if (reason === "end_turn") run.history = [...run.history, { role: "assistant", content }]
         emit?.("message_delta", { type: "message_delta", delta: { stop_reason: reason, stop_sequence: stops.matched ?? null }, usage })
         emit?.("message_stop", { type: "message_stop" })
         return { ...base, content, stop_reason: reason, stop_sequence: stops.matched ?? null, usage }
@@ -152,6 +159,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         throw error
       } finally {
         runtime.record({ requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens })
+        completed = true
         run.busy = false
         request.signal.removeEventListener("abort", cancel)
       }
@@ -190,6 +198,15 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
   async function providerStatus(): Promise<ProviderUsage> {
     const { quota, models, error, loading } = runtime.providerFacts()
     return { id: 'antigravity', name: 'Antigravity', enabled: true, status: runtime.draining ? 'draining' : error ? 'unavailable' : loading ? 'loading' : 'healthy', endpoint: config.backend === 'combined' ? '/antigravity/v1/messages' : '/v1/messages', error, models,
+      capabilities: [
+        { name: 'Conversation reuse', status: runtime.options.reuseConversations === false ? 'Disabled' : 'Available', detail: 'Exact continuations reuse a live CLI conversation. Edits, expired sessions and restarts replay history; cache hits depend on the provider.' },
+        { name: 'Client tools', status: runtime.options.allowToolBridge ? 'Available' : 'Disabled', detail: 'Parallel batches, exact result correlation and client-side approval. Native actions have separate operator controls.' },
+        { name: 'Native browser', status: runtime.options.allowNativeBrowser ? 'Operator enabled' : 'Disabled', detail: 'Isolated Chrome via Chrome DevTools MCP 1.9.0; requires both installed locally. Native actions bypass client approval dialogs.' },
+        { name: 'Native subagents', status: runtime.options.allowNativeSubagents ? 'Operator enabled' : 'Disabled', detail: 'Self/research agents inherit the guarded workspace and enabled client tools. Browser delegation requires its separate grant.' },
+        { name: 'OpenAI clients', status: 'Available', detail: 'Chat Completions and Responses with text, images, function tools, JSON and streaming. Full history is required.' },
+        { name: 'Documents and media', status: 'Local dependencies', detail: 'PDF pages use Poppler. Audio uses local Whisper; video uses sampled frames and a transcript. These are adapted inputs, not native multimodal understanding.' },
+        { name: 'Token controls', status: 'Limited', detail: 'Token counts are estimates; output budgets are advisory. Exact token caps, numeric thinking budgets, sampling controls and native reasoning blocks are unavailable.' },
+      ],
       activity: runtime.activity(), accounts: [{ id: 'Antigravity account', active: true, ...quota }] }
   }
   const fetch = async (request: Request): Promise<Response> => {
@@ -202,6 +219,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         const filter = new URL(request.url).searchParams.get('provider')
         return path.endsWith('/status') ? Response.json(data) : new Response(providerOverview(data, filter === 'claude' || filter === 'antigravity' ? filter : 'all'), { headers: { 'content-type': 'text/html; charset=utf-8' } })
       }
+      if (request.method === 'GET' && path === '/telemetry/native-tools') return Response.json(runtime.nativeActivity)
       if (request.method === 'GET' && path === '/telemetry/requests') return Response.json(runtime.requests.map(r => ({ ...r, provider: 'antigravity', totalDurationMs: r.durationMs, cacheReadInputTokens: r.cacheReadTokens, adapter: 'antigravity', profileId: 'agy-account', tokens: { input: r.inputTokens, output: r.outputTokens, cacheRead: r.cacheReadTokens } })))
       if (request.method === 'GET' && path === '/telemetry/summary') return Response.json({ totalRequests: runtime.totals.requests, errorCount: runtime.totals.errors, tokenUsage: { totalInputTokens: runtime.totals.inputTokens, totalOutputTokens: runtime.totals.outputTokens, totalCacheReadTokens: runtime.totals.cacheReadTokens } })
       if (request.method === 'GET' && path === '/v1/usage/quota/all') return Response.json({ profiles: [{ id: 'agy-account', ...runtime.providerFacts().quota }] })
@@ -213,12 +231,14 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         if (runtime.draining) return Response.json({ status: "draining" }, { status: 503 })
         await runtime.initialize()
         await runtime.verifyAccount()
-        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: false, toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory" }, processes: runtime.runs.size, preparing: runtime.preparing, reclaimed: runtime.reclaimed, completed: runtime.completed, failed: runtime.failed })
+        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, urlImages: !!runtime.options.allowToolBridge, documents: "local-poppler", audio: "local-whisper", video: "local-frames-and-transcript", nativeReasoning: false, nativeBrowser: !!runtime.options.allowNativeBrowser, nativeSubagents: !!runtime.options.allowNativeSubagents, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: false, conversationReuse: runtime.options.reuseConversations !== false ? "live-process" : false, parallelTools: true, tokenCounting: "estimate", openai: ["chat-completions", "responses"], toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory" }, processes: runtime.runs.size, activeProcesses: [...runtime.runs.values()].filter(run => run.active).length, pendingToolProcesses: [...runtime.runs.values()].filter(run => run.delivered.length > 0).length, preparing: runtime.preparing, reclaimed: runtime.reclaimed, reused: runtime.reused, completed: runtime.completed, failed: runtime.failed })
       }
       if (request.method === "GET" && path === "/v1/models") {
         const models = await runtime.availableModels()
         return Response.json({ object: "list", data: models.map(id => ({ id, type: "model", object: "model", display_name: id, owned_by: "antigravity" })), has_more: false, first_id: models[0], last_id: models.at(-1) })
       }
+      if (request.method === "POST" && path === "/v1/messages/count_tokens") return Response.json(estimateAgTokens(parseAgRequest(await readBody(request))), { headers: { "x-meridian-token-count": "estimate" } })
+      if (request.method === "POST" && ["/v1/chat/completions", "/v1/responses"].includes(path)) return await agOpenai(request, await readBody(request), path === "/v1/responses", messages)
       if (request.method === "POST" && ["/v1/messages", "/messages"].includes(path)) return await messages(request)
       return errorResponse(new AntigravityError("Endpoint unavailable on the Antigravity backend", 404, "not_found_error"))
     } catch (error) { return errorResponse(error) }
@@ -228,7 +248,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     initPlugins: () => runtime.initialize(),
     beginDrain: () => { runtime.draining = true },
     forceAbortInFlight: () => { for (const run of runtime.runs.values()) run.abort(new Error("Backend shutting down")) },
-    getInFlightCount: () => runtime.runs.size,
+    getInFlightCount: () => [...runtime.runs.values()].filter(run => run.active).length,
     closeBackend: () => runtime.close(),
   }
 }

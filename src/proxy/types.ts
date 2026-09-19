@@ -7,6 +7,15 @@ export interface AntigravityOptions {
   allowToolBridge?: boolean
   maxConcurrent?: number
   turnTimeoutMs?: number
+  /** Retain matching ordinary conversations in a live official CLI process. */
+  reuseConversations?: boolean
+  /** Explicit opt-in until an authenticated Windows live gate is available. */
+  allowUnverifiedWindows?: boolean
+  /** Native actions execute inside agy, outside client approval dialogs. */
+  allowNativeBrowser?: boolean
+  /** Installed Chrome DevTools MCP 1.9.0 executable; never downloaded at request time. */
+  browserMcpExecutable?: string
+  allowNativeSubagents?: boolean
   pendingToolTimeoutMs?: number
 }
 
@@ -56,6 +65,9 @@ export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig 
     ...(backend !== "claude" ? { antigravity: {
       executable: process.env.MERIDIAN_AGY_PATH,
       allowToolBridge: process.env.MERIDIAN_AGY_ALLOW_TOOL_BRIDGE === "1",
+      allowNativeBrowser: process.env.MERIDIAN_AGY_ALLOW_NATIVE_BROWSER === "1",
+      browserMcpExecutable: process.env.MERIDIAN_AGY_BROWSER_MCP_PATH,
+      allowNativeSubagents: process.env.MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS === "1",
       maxConcurrent: process.env.MERIDIAN_AGY_MAX_CONCURRENT === undefined ? undefined : Number(process.env.MERIDIAN_AGY_MAX_CONCURRENT),
       turnTimeoutMs: process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS),
       pendingToolTimeoutMs: process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS),
