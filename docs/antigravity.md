@@ -1,12 +1,12 @@
-# Experimental Antigravity backend
+# Antigravity backend
 
 Meridian can expose the official `agy` CLI through its Anthropic Messages
 endpoint using the CLI's signed-in Google account. No Gemini API key, Python
 SDK, copied OAuth credential, private model endpoint, or API-key fallback is
 used. Claude remains the default backend.
 
-This first version supports text and client-owned tools on macOS and Linux.
-It is experimental: Antigravity's harness instructions remain in effect,
+The supported macOS path covers text and client-owned tools. Linux is preview.
+The scope is explicit: Antigravity's harness instructions remain in effect,
 `max_tokens` is advisory, and a new ordinary turn replays client history.
 Windows and arbitrary client compatibility are not established.
 
@@ -34,8 +34,8 @@ Use a model slug returned by that endpoint, such as `gemini-3.8-flash-low` if
 your account offers it. Claude aliases such as `sonnet` are not remapped.
 The local client may require a placeholder API key; this is not a Google key.
 The existing `MERIDIAN_API_KEY` protects message and model endpoints with
-`x-api-key` or bearer authentication. Health probes remain public. Desktop pages
-and Claude profiles are unavailable on this backend.
+`x-api-key` or bearer authentication. Health probes remain public. Provider usage is available in the web dashboard and desktop app. Claude
+profiles remain specific to Claude.
 
 When running from a checkout, replace `meridian` with `node dist/cli.js` after
 `npm install` and `npm run build`.
@@ -49,7 +49,7 @@ server. This combination is deliberate: the CLI's headless permission layer
 denied MCP dispatch in research even when the hook returned `allow`.
 
 The hook has been tested to deny a built-in file read under auto-approval.
-This is not OS sandboxing or a proof of complete isolation against CLI bugs or
+The hook alone is not OS sandboxing or a proof of complete isolation against CLI bugs or
 conflicting user customizations. Global CLI customizations still load. Use this
 opt-in only with a trusted local CLI installation and account configuration;
 project-scoped grants without blanket CLI auto-approval remain future work.
@@ -78,6 +78,9 @@ completed-history edits and undo independent of undocumented native rewind
 controls, but forfeits native resume/cache affinity. History is rendered as
 explicit JSON context; it is not native role-preserving transcript import.
 
+Repeated MCP request IDs reuse their original result, and conflicting reuse is
+rejected. Each turn allows at most 256 distinct MCP tool calls.
+
 Meridian does not automatically retry side-effecting work. If the proxy or CLI
 dies during a pending tool call, the old result cannot resume that process.
 Start a new user turn containing the completed tool history; do not blindly
@@ -93,7 +96,7 @@ directories. Meridian does not edit or garbage-collect those private records.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MERIDIAN_BACKEND` | `claude` | Set to `antigravity` to select the experimental backend |
+| `MERIDIAN_BACKEND` | `claude` | Set to `antigravity` to select Antigravity, or `combined` for both providers |
 | `MERIDIAN_AGY_PATH` | `agy` | Official CLI executable |
 | `MERIDIAN_AGY_ALLOW_TOOL_BRIDGE` | off | Explicit tool bridge permission opt-in |
 | `MERIDIAN_AGY_MAX_CONCURRENT` | `4` | Maximum live processes, including pending tools |
@@ -118,14 +121,16 @@ allowToolBridge, maxConcurrent, turnTimeoutMs, pendingToolTimeoutMs }` on
 - `GET /health`, `/readyz`, `/livez`: backend identity, capability limits and health.
 - Images, thinking controls other than `disabled`, forced tool choice, sampling
   controls, structured-output contracts, stop sequences, OpenAI routes, Claude
-  profiles, plugins, telemetry/dashboard and native persistent resume are not
+  profiles, plugins, the full Claude telemetry dashboard and native persistent resume are not
   implemented. Unsupported modeled request features fail before execution.
 - `max_tokens` is included as a prompt instruction; the CLI does not expose a
   native hard output-token cap. Health reports this as `advisory`.
 - CLI permission denial is an error even when the CLI's terminal status says
   `SUCCESS`. Interrupted or malformed streams never receive a success stop.
 - Usage is accumulated from per-step usage for each HTTP response, avoiding
-  double-counting cumulative CLI conversation totals.
+  double-counting cumulative CLI conversation totals. Cached input is subtracted
+  from CLI input before filling Anthropic `input_tokens`, and reported separately
+  as `cache_read_input_tokens`.
 - Fresh replay, full native prompt inheritance and account quotas can make
   this less efficient than Claude's existing resume implementation.
 
@@ -145,3 +150,73 @@ for the recorded versions and outcome.
 
 Implementation tracks [#1073](https://github.com/rynfar/meridian/issues/1073),
 following the [research PR](https://github.com/rynfar/meridian/pull/1050).
+
+## Combined service and provider navigation
+
+Set `MERIDIAN_BACKEND=combined` to run both providers in one Meridian service.
+Claude retains `/v1/messages`; Antigravity uses `/antigravity/v1/messages` and
+`/antigravity/v1/models`. Configure the Antigravity client's base URL with the
+`/antigravity` suffix. Claude account routing never selects a Google account.
+An unavailable Antigravity installation does not prevent Claude from starting.
+
+Open `/providers` for **All providers / Claude / Antigravity** navigation.
+`/providers/status` supplies the same data to Meridian Desktop. Quota windows
+come from the official `agy -p /usage --output-format json` command: Gemini and
+Claude/GPT allowances remain separate inside the Google subscription. Quota reads refresh in the background; the dashboard never waits for them. Failed
+refreshes retain last known readings with stale/error labels. These percentages
+are never added to Anthropic percentages or converted to invented costs.
+
+The activity strip sums observed request and token counts over the past hour.
+Antigravity uses bounded minute buckets; Claude uses its telemetry window. Antigravity activity is process-local, retains the
+latest 500 request metadata records, and resets when Meridian restarts. No
+prompts or tool contents are retained in this activity feed. Subscription quotas
+come from the account and survive proxy restarts.
+
+The macOS app has a Providers page, the same overview and filters, separate
+Antigravity quota windows in the menu bar, and provider selection under Settings.
+For an app-managed service, stop it, choose Claude, Antigravity, or both, then
+start it. Client tools require the separate opt-in checkbox. An attached service
+is configured by its owner. Sign into Google using the official CLI; the desktop
+app does not collect Google credentials or repurpose Claude profile login.
+
+## Compatibility and operational contract
+
+The supported macOS text/client-tools path is gated to official `agy` **1.2.7**.
+An unverified CLI update is refused before a new model process starts. Validate
+new versions with the live gates below before changing the compatibility gate.
+Linux remains preview until its actual CLI/client flow is verified; Windows is
+refused. This is a supported, bounded protocol surface, not full Claude parity.
+
+Each new process rechecks account-provider and paid-credit settings, even when
+the model catalogue is cached. Preflight work counts toward capacity. Readiness
+checks CLI configuration, not a billable model call; account quota failures are
+shown separately in provider status. A quota failure maps to HTTP 429 (or an SSE
+error) with retry guidance. Work is never automatically replayed after errors.
+Successful terminal CLI output is committed only after a clean process exit.
+Slow stream readers have a 1 MiB response-buffer budget; deadlines and process
+shutdown still apply. Terminal sandboxing is requested in addition to the deny
+hook, but does not claim full isolation of the CLI or all native tools.
+
+MCP tool content is wrapped in `meridian_client_result` JSON. The model is
+instructed to decode that exact client content, keeping CLI timing metadata out
+of file contents. The live Pi copy gate compares exact bytes and catches leaks.
+
+For the actual macOS app and its managed combined service:
+
+```sh
+npm run build
+npm ci --prefix apps/desktop
+npm run build --prefix apps/desktop
+env -u ELECTRON_RUN_AS_NODE apps/desktop/node_modules/.bin/electron \
+  scripts/e2e-antigravity-desktop.cjs
+```
+
+This creates disposable app data and an isolated managed service, exercises
+provider filters and settings, runs actual Pi read/write through Antigravity,
+checks the ordinary Claude SDK route, observes both providers' activity, and
+stops the owned service. It consumes both accounts' model quota.
+
+
+CLI behavior references: [headless mode](https://antigravity.google/docs/cli/headless/),
+[hooks](https://antigravity.google/docs/hooks), and
+[terminal sandbox](https://antigravity.google/docs/sandbox?tab=cli).

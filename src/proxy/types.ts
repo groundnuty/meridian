@@ -3,7 +3,7 @@ import type { ProfileConfig } from "./profiles"
 
 export interface AntigravityOptions {
   executable?: string
-  /** Explicit consent to the experimental auto-approval + deny-hook tool bridge. */
+  /** Explicit consent to the auto-approval + deny-hook tool bridge. */
   allowToolBridge?: boolean
   maxConcurrent?: number
   turnTimeoutMs?: number
@@ -12,7 +12,7 @@ export interface AntigravityOptions {
 
 export interface ProxyConfig {
   /** Defaults to Claude. Antigravity is an opt-in, subscription-account CLI backend. */
-  backend?: "claude" | "antigravity"
+  backend?: "claude" | "antigravity" | "combined"
   antigravity?: AntigravityOptions
   port: number
   host: string
@@ -50,10 +50,10 @@ export interface ProxyConfig {
 /** Read backend selection at instance creation, rather than module import. */
 export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig {
   const backend = config.backend ?? process.env.MERIDIAN_BACKEND ?? "claude"
-  if (backend !== "claude" && backend !== "antigravity") throw new Error("MERIDIAN_BACKEND must be claude or antigravity")
+  if (backend !== "claude" && backend !== "antigravity" && backend !== "combined") throw new Error("MERIDIAN_BACKEND must be claude, antigravity or combined")
   return {
     ...DEFAULT_PROXY_CONFIG, ...config, backend,
-    ...(backend === "antigravity" ? { antigravity: {
+    ...(backend !== "claude" ? { antigravity: {
       executable: process.env.MERIDIAN_AGY_PATH,
       allowToolBridge: process.env.MERIDIAN_AGY_ALLOW_TOOL_BRIDGE === "1",
       maxConcurrent: process.env.MERIDIAN_AGY_MAX_CONCURRENT === undefined ? undefined : Number(process.env.MERIDIAN_AGY_MAX_CONCURRENT),

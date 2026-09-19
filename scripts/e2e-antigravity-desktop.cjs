@@ -1,0 +1,73 @@
+// Run with apps/desktop/node_modules/.bin/electron after both builds.
+// Actual macOS application, disposable app data and managed combined service.
+const { app, BrowserWindow } = require('electron')
+const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } = require('node:fs')
+const { join, resolve } = require('node:path')
+const { tmpdir } = require('node:os')
+const { createServer } = require('node:net')
+const { spawn } = require('node:child_process')
+const assert = require('node:assert/strict')
+const repo = resolve(__dirname, '..')
+const root = mkdtempSync(join(tmpdir(), 'meridian-agy-desktop-'))
+app.setPath('userData', root)
+const delay = ms => new Promise(r => setTimeout(r, ms))
+async function waitFor(fn, timeout = 90000) {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) { const value = await fn(); if (value) return value; await delay(250) }
+  throw new Error('Desktop verification timed out')
+}
+async function main() {
+  const listener = createServer()
+  await new Promise(r => listener.listen(0, '127.0.0.1', r))
+  const port = listener.address().port
+  await new Promise(r => listener.close(r))
+  const version = require(join(repo, 'package.json')).version
+  const versionDir = join(root, 'preview/versions', version, 'node_modules/@rynfar')
+  mkdirSync(versionDir, {recursive:true}); symlinkSync(repo, join(versionDir, 'meridian'), 'dir')
+  writeFileSync(join(root, 'preview/desktop.json'), JSON.stringify({mode:'managed',port,selected:version,backend:'combined',allowAntigravityTools:true,autoStart:true,openWindowAtLaunch:true}))
+  console.log('Artifacts: ' + root)
+  require(join(repo, 'apps/desktop/dist/main.cjs'))
+  const window = await waitFor(() => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')))
+  const js = source => window.webContents.executeJavaScript(source)
+  await waitFor(async () => { const state = await js('window.meridian.state()'); return state.owned && state.providers?.providers.some(p => p.id === 'antigravity' && p.status === 'healthy') })
+  await js(`document.querySelector('[data-page="Providers"]').click()`)
+  await waitFor(() => js(`document.querySelectorAll('[data-provider-card]').length === 2`))
+  await delay(150)
+  writeFileSync(join(root, 'providers-all.png'), (await window.webContents.capturePage()).toPNG())
+  await js(`document.querySelector('[data-provider="antigravity"]').click()`)
+  assert.equal(await js(`document.querySelectorAll('[data-provider-card]').length`), 1)
+  assert.equal(await js(`document.querySelector('[data-provider-card]').dataset.providerCard`), 'antigravity')
+  await delay(150)
+  writeFileSync(join(root, 'antigravity.png'), (await window.webContents.capturePage()).toPNG())
+  await js(`document.querySelector('[data-page="Settings"]').click()`)
+  assert.equal(await js(`document.querySelector('[name="backend"]').value`), 'combined')
+  assert.equal(await js(`document.querySelector('[name="backend"]').disabled`), true)
+  const child = spawn(join(repo,'apps/desktop/node_modules/node/bin/node'), [join(repo,'scripts/e2e-antigravity.mjs')], {cwd:repo, env:{...process.env,E2E_MERIDIAN_URL:`http://127.0.0.1:${port}/antigravity`},stdio:'inherit'})
+  assert.equal(await new Promise((r,j) => {child.once('error',j);child.once('close',r)}),0)
+  // Also prove the ordinary Claude route remains on the actual Claude SDK.
+  const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'claude-haiku-4-5',max_tokens:64,messages:[{role:'user',content:'Reply with exactly CLAUDE_READY. Do not use tools.'}]}),signal:AbortSignal.timeout(90000)})
+  const answer = await response.json()
+  assert.equal(response.status,200,JSON.stringify(answer)); assert(JSON.stringify(answer).includes('CLAUDE_READY'))
+  const state = await waitFor(async () => {
+    await js(`window.meridian.action('refresh')`)
+    const current = await js('window.meridian.state()')
+    writeFileSync(join(root, 'state-after-live.json'), JSON.stringify(current, null, 2))
+    return current.providers?.providers.every(p => p.activity?.requests > 0 && !p.error) ? current : undefined
+  }, 45000)
+  writeFileSync(join(root, 'state-after-live.json'), JSON.stringify(state, null, 2))
+  assert(state.providers, JSON.stringify({errors:state.dataErrors,health:state.health}))
+  assert(state.providers.providers.every(p => p.activity.requests > 0))
+  assert(state.requests.some(r => r.provider === 'antigravity'))
+  await js(`document.querySelector('[data-page="Providers"]').click();document.querySelector('[data-provider="all"]').click()`)
+  await delay(150)
+  writeFileSync(join(root, 'providers-after-live.png'), (await window.webContents.capturePage()).toPNG())
+  const panel = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/tray.html'))
+  assert((await panel.webContents.executeJavaScript('document.body.innerText')).includes('Antigravity'))
+  writeFileSync(join(root, 'tray.png'), (await panel.webContents.capturePage()).toPNG())
+  await js(`window.meridian.action('stop')`)
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/livez`, {signal:AbortSignal.timeout(1000)}))
+  writeFileSync(join(root,'report.json'),JSON.stringify({platform:process.platform,version,passed:['actual desktop provider navigation','actual managed combined service','Pi read/write through Antigravity','Claude SDK route','combined activity and separate quotas','menu-bar Antigravity quotas','owned service shutdown']},null,2))
+  console.log('PASS desktop provider flow')
+  app.quit()
+}
+main().catch(async error => { console.error(error); app.once('will-quit', () => app.exit(1)); app.quit() })

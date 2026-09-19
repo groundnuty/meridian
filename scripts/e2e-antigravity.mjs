@@ -16,11 +16,12 @@ const root = await mkdtemp(join(tmpdir(), "meridian-agy-e2e-"))
 const config = join(root, "pi-config"), project = join(root, "client")
 await mkdir(config); await mkdir(project)
 console.log(`Artifacts: ${root}`)
-const proxy = await startProxyServer({ backend: "antigravity", port: 0, silent: true, antigravity: { allowToolBridge: true, executable: process.env.MERIDIAN_AGY_PATH } })
-if (!proxy.server.listening) await once(proxy.server, "listening")
-const address = proxy.server.address()
-assert(address && typeof address !== "string")
-const url = `http://127.0.0.1:${address.port}`
+const externalUrl = process.env.E2E_MERIDIAN_URL
+const proxy = externalUrl ? undefined : await startProxyServer({ backend: "antigravity", port: 0, silent: true, antigravity: { allowToolBridge: true, executable: process.env.MERIDIAN_AGY_PATH } })
+if (proxy && !proxy.server.listening) await once(proxy.server, "listening")
+const address = proxy?.server.address()
+assert(externalUrl || (address && typeof address !== "string"))
+const url = externalUrl || `http://127.0.0.1:${address.port}`
 const report = { model, cli: spawnSync(process.env.MERIDIAN_AGY_PATH || "agy", ["--version"], { encoding: "utf8" }).stdout.trim(), platform: process.platform, passed: [] }
 let relay
 try {
@@ -96,6 +97,6 @@ try {
   console.log(JSON.stringify(report, null, 2))
 } finally {
   await writeFile(join(root, "report.json"), JSON.stringify(report, null, 2))
-  await proxy.close()
+  await proxy?.close()
   if (relay) { relay.closeAllConnections(); await new Promise(resolve => relay.close(resolve)) }
 }

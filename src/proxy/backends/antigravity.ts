@@ -1,3 +1,6 @@
+import { providerPageHtml } from '../../telemetry/providerPage'
+import { providerOverview, type ProviderUsage } from '../../telemetry/providerView'
+import { providerSnapshot, disabledProvider } from './providerStatus'
 import { randomUUID } from "node:crypto"
 import type { ProxyConfig, ProxyServer } from "../types"
 import { getBuildInfo } from "../buildInfo"
@@ -7,7 +10,7 @@ import { AntigravityError, blocks, contractKey, historyKey, parseAgRequest, type
 
 function errorResponse(error: unknown): Response {
   const e = error instanceof AntigravityError ? error : new AntigravityError(error instanceof Error ? error.message : String(error), 503, "api_error")
-  return Response.json({ type: "error", error: { type: e.type, message: e.message } }, { status: e.status, headers: e.status === 429 || e.status === 503 ? { "retry-after": "5" } : {} })
+  return Response.json({ type: "error", error: { type: e.type, message: e.message } }, { status: e.status, headers: e.retryAfter ? { "retry-after": String(e.retryAfter) } : {} })
 }
 async function readBody(request: Request): Promise<unknown> {
   if (!request.body) throw new AntigravityError("Missing request body")
@@ -27,9 +30,9 @@ async function readBody(request: Request): Promise<unknown> {
   } finally { reader.releaseLock() }
 }
 
-export function createAntigravityServer(config: ProxyConfig, runtime = new AntigravityRuntime({ ...config.antigravity, maxConcurrent: config.antigravity?.maxConcurrent ?? config.maxConcurrent })): ProxyServer & { closeBackend(): Promise<void> } {
+export function createAntigravityServer(config: ProxyConfig, runtime = new AntigravityRuntime({ ...config.antigravity, maxConcurrent: config.antigravity?.maxConcurrent ?? config.maxConcurrent })): ProxyServer & { closeBackend(): Promise<void>; providerStatus(): Promise<ProviderUsage> } {
   if (config.profiles?.length || config.defaultProfile) throw new Error("Antigravity does not support Claude profile configuration")
-  async function selectRun(body: AgRequest): Promise<AntigravityRun> {
+  async function selectRun(body: AgRequest, signal: AbortSignal): Promise<AntigravityRun> {
     const last = blocks(body.messages.at(-1)!)
     const results = last.filter(b => b.type === "tool_result")
     if (results.length) {
@@ -46,7 +49,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       run.accept(result)
       return run
     }
-    const run = await runtime.create(body)
+    const run = await runtime.create(body, signal)
     run.busy = true
     return run
   }
@@ -56,14 +59,17 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     if (request.headers.has("x-meridian-profile")) throw new AntigravityError("Antigravity uses the current agy account; Claude profile routing is unavailable")
     const body = parseAgRequest(await readBody(request))
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
-    const run = await selectRun(body)
+    const run = await selectRun(body, request.signal)
     const cancel = () => run.abort(new AntigravityError("Request cancelled", 499, "api_error"))
     request.signal.addEventListener("abort", cancel, { once: true })
     if (request.signal.aborted) cancel()
+    const started = Date.now()
     const id = "msg_agy_" + randomUUID().replaceAll("-", "")
     async function consume(emit?: (event: string, value: unknown) => void) {
       const content: AgBlock[] = []
       const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+      let status = 200
+      let failure: string | undefined
       let textOpen = false
       let reason: "end_turn" | "tool_use" = "end_turn"
       const base = { id, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage } }
@@ -72,7 +78,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         while (true) {
           const event = await run.queue.next()
           if (event.kind === "error") throw event.error
-          if (event.kind === "usage") { usage.input_tokens += event.input; usage.output_tokens += event.output; usage.cache_read_input_tokens += event.cache; continue }
+          if (event.kind === "usage") { usage.input_tokens += Math.max(0, event.input - event.cache); usage.output_tokens += event.output; usage.cache_read_input_tokens += event.cache; continue }
           if (event.kind === "text") {
             if (!textOpen) {
               content.push({ type: "text", text: "" }); textOpen = true
@@ -100,9 +106,12 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         emit?.("message_stop", { type: "message_stop" })
         return { ...base, content, stop_reason: reason, usage }
       } catch (error) {
+        status = error instanceof AntigravityError ? error.status : 502
+        failure = error instanceof Error ? error.message : String(error)
         run.abort(error instanceof Error ? error : new Error(String(error)))
         throw error
       } finally {
+        runtime.record({ requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens })
         run.busy = false
         request.signal.removeEventListener("abort", cancel)
       }
@@ -112,38 +121,70 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     const encoder = new TextEncoder()
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        const emit = (event: string, value: unknown) => { if (!cancelled) controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`)) }
-        const heartbeat = setInterval(() => emit("ping", { type: "ping" }), 10000)
+        const emit = (event: string, value: unknown) => {
+          if (cancelled) return
+          if ((controller.desiredSize ?? 0) <= 0) {
+            cancelled = true
+            const error = new AntigravityError("Streaming client is not reading; response buffer exceeded 1 MiB", 499, "api_error")
+            run.abort(error); controller.error(error); throw error
+          }
+          const frame = encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`)
+          if (frame.byteLength > (controller.desiredSize ?? 0)) {
+            cancelled = true
+            const error = new AntigravityError("Streaming response exceeded its buffer budget", 502, "api_error")
+            run.abort(error); controller.error(error); throw error
+          }
+          controller.enqueue(frame)
+        }
+        const heartbeat = setInterval(() => { try { emit("ping", { type: "ping" }) } catch (error) { run.abort(error instanceof Error ? error : new Error(String(error))) } }, 10000)
         heartbeat.unref()
         void consume(emit).catch(error => {
-          emit("error", { type: "error", error: { type: error instanceof AntigravityError ? error.type : "api_error", message: String(error instanceof Error ? error.message : error) } })
+          emit("error", { type: "error", error: { type: error instanceof AntigravityError ? error.type : "api_error", message: String(error instanceof Error ? error.message : error), retry_after: error instanceof AntigravityError ? error.retryAfter : undefined } })
         }).finally(() => { clearInterval(heartbeat); if (!cancelled) controller.close() })
       },
       cancel() { cancelled = true; cancel() },
-    })
+    }, { highWaterMark: 1024 * 1024, size: chunk => chunk?.byteLength ?? 0 })
     return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "x-accel-buffering": "no" } })
   }
 
+  async function providerStatus(): Promise<ProviderUsage> {
+    const { quota, models, error, loading } = runtime.providerFacts()
+    return { id: 'antigravity', name: 'Antigravity', enabled: true, status: runtime.draining ? 'draining' : error ? 'unavailable' : loading ? 'loading' : 'healthy', endpoint: config.backend === 'combined' ? '/antigravity/v1/messages' : '/v1/messages', error, models,
+      activity: runtime.activity(), accounts: [{ id: 'Antigravity account', active: true, ...quota }] }
+  }
   const fetch = async (request: Request): Promise<Response> => {
     try {
       const path = new URL(request.url).pathname
       if (!["/health", "/readyz", "/livez"].includes(path) && !hasValidApiKey(request.headers)) throw new AntigravityError("Invalid or missing API key", 401, "authentication_error")
+      if (request.method === 'GET' && ['/', '/providers'].includes(path)) return new Response(providerPageHtml, { headers: { 'content-type': 'text/html; charset=utf-8' } })
+      if (request.method === 'GET' && ['/providers/status', '/providers/view'].includes(path)) {
+        const data = providerSnapshot([disabledProvider('claude'), await providerStatus()])
+        const filter = new URL(request.url).searchParams.get('provider')
+        return path.endsWith('/status') ? Response.json(data) : new Response(providerOverview(data, filter === 'claude' || filter === 'antigravity' ? filter : 'all'), { headers: { 'content-type': 'text/html; charset=utf-8' } })
+      }
+      if (request.method === 'GET' && path === '/telemetry/requests') return Response.json(runtime.requests.map(r => ({ ...r, provider: 'antigravity', totalDurationMs: r.durationMs, cacheReadInputTokens: r.cacheReadTokens, adapter: 'antigravity', profileId: 'agy-account', tokens: { input: r.inputTokens, output: r.outputTokens, cacheRead: r.cacheReadTokens } })))
+      if (request.method === 'GET' && path === '/telemetry/summary') return Response.json({ totalRequests: runtime.totals.requests, errorCount: runtime.totals.errors, tokenUsage: { totalInputTokens: runtime.totals.inputTokens, totalOutputTokens: runtime.totals.outputTokens, totalCacheReadTokens: runtime.totals.cacheReadTokens } })
+      if (request.method === 'GET' && path === '/v1/usage/quota/all') return Response.json({ profiles: [{ id: 'agy-account', ...runtime.providerFacts().quota }] })
+      if (request.method === 'GET' && path === '/profiles/list') return Response.json({ profiles: [{ id: 'agy-account', type: 'Antigravity', isActive: true }], activeProfile: 'agy-account' })
+      if (request.method === 'GET' && ['/telemetry/logs', '/plugins/list'].includes(path)) return Response.json([])
+      if (request.method === 'GET' && path === '/settings/api/features') return Response.json({})
       if (request.method === "GET" && path === "/livez") return Response.json({ status: "alive" })
       if (request.method === "GET" && ["/health", "/readyz"].includes(path)) {
         if (runtime.draining) return Response.json({ status: "draining" }, { status: 503 })
-        await runtime.availableModels()
-        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: true, mode: "passthrough", auth: { loggedIn: true, provider: "agy-account" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: false, persistentResume: false, maxTokens: "advisory" }, processes: runtime.runs.size })
+        await runtime.initialize()
+        await runtime.verifyAccount()
+        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: false, persistentResume: false, maxTokens: "advisory" }, processes: runtime.runs.size, preparing: runtime.preparing, completed: runtime.completed, failed: runtime.failed })
       }
       if (request.method === "GET" && path === "/v1/models") {
         const models = await runtime.availableModels()
         return Response.json({ object: "list", data: models.map(id => ({ id, type: "model", object: "model", display_name: id, owned_by: "antigravity" })), has_more: false, first_id: models[0], last_id: models.at(-1) })
       }
       if (request.method === "POST" && ["/v1/messages", "/messages"].includes(path)) return await messages(request)
-      return errorResponse(new AntigravityError("Endpoint unavailable on the experimental Antigravity backend", 404, "not_found_error"))
+      return errorResponse(new AntigravityError("Endpoint unavailable on the Antigravity backend", 404, "not_found_error"))
     } catch (error) { return errorResponse(error) }
   }
   return {
-    app: { fetch }, config,
+    app: { fetch }, config, providerStatus,
     initPlugins: () => runtime.initialize(),
     beginDrain: () => { runtime.draining = true },
     forceAbortInFlight: () => { for (const run of runtime.runs.values()) run.abort(new Error("Backend shutting down")) },

@@ -47,7 +47,7 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(response.status).toBe(200)
     const body = await decode(response)
     expect(body.content).toEqual([{ type: "text", text: "READY" }])
-    expect(body.usage.input_tokens).toBe(120)
+    expect(body.usage.input_tokens).toBe(100) // CLI input includes its 20 cached tokens.
     expect(body.usage.cache_read_input_tokens).toBe(20)
   })
   it("holds MCP until the matching HTTP tool result and preserves is_error", async () => {
@@ -62,7 +62,7 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect((await send(changed)).status).toBe(409)
     const answer = await decode(await send(followup))
     expect(answer.content[0]!.text).toBe("FAILED:client-secret")
-    expect(answer.usage.input_tokens).toBe(120) // Not the earlier 100-token tool request.
+    expect(answer.usage.input_tokens).toBe(100) // Not the earlier 100-token tool request.
     expect((await send(followup)).status).toBe(409) // No duplicate execution.
   })
   it("serializes a parallel upstream batch into individually correlated client calls", async () => {
@@ -172,4 +172,89 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
       else process.env.MERIDIAN_API_KEY = previous
     }
   })
+  it("refuses unverified CLI upgrades and changed provider settings before a fresh process", async () => {
+    const { send, runtime } = fixture()
+    expect((await send({ ...initial(), tools: [] })).status).toBe(200)
+    runtime.childEnv.AGY_FIXTURE_API = "1"
+    expect((await send({ ...initial(), tools: [] })).status).toBe(503)
+    delete runtime.childEnv.AGY_FIXTURE_API
+    runtime.childEnv.AGY_FIXTURE_VERSION = "2.0.0"
+    const response = await send({ ...initial(), tools: [] })
+    expect(response.status).toBe(503)
+    expect(await response.text()).toContain("Unsupported agy version")
+  })
+  it("classifies quota refusals consistently for JSON and SSE", async () => {
+    const { send } = fixture()
+    const response = await send({ ...initial("RATE_LIMIT"), tools: [] })
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("45")
+    const stream = await (await send({ ...initial("RATE_LIMIT"), tools: [], stream: true })).text()
+    expect(stream).toContain('"retry_after":45')
+    expect(stream).not.toContain("event: message_stop")
+  })
+  it("does not commit success before a clean CLI exit", async () => {
+    const { send } = fixture({ turnTimeoutMs: 200 })
+    expect((await send({ ...initial("BAD_EXIT"), tools: [] })).status).toBe(502)
+    expect((await send({ ...initial("LINGER"), tools: [] })).status).toBe(504)
+  })
+  it("bounds simultaneous preflight admission and cancels initialization on shutdown", async () => {
+    const { send, runtime } = fixture({ maxConcurrent: 1 })
+    const first = send({ ...initial("HANG"), tools: [] })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    expect((await send(initial())).status).toBe(429)
+    await runtime.close()
+    expect((await first).status).toBe(503)
+    expect(runtime.preparing).toBe(0)
+    expect(runtime.runs.size).toBe(0)
+  })
+  it("exposes real CLI quota groups separately from observed tokens", async () => {
+    const { server, send, runtime } = fixture()
+    await send({ ...initial(), tools: [] })
+    await runtime.accountQuota()
+    const response = await server.app.fetch(new Request("http://local/providers/status"))
+    const body = await response.json() as { providers: Array<{ id: string; activity?: { requests: number }; accounts: Array<{ windows: Array<{ utilization: number; group: string }> }> }> }
+    const provider = body.providers.find(p => p.id === "antigravity")!
+    expect(provider.activity?.requests).toBe(1)
+    expect(provider.accounts[0]!.windows[0]).toMatchObject({ group: "Gemini Models", utilization: 0.25 })
+    const page = await server.app.fetch(new Request("http://local/providers/view?provider=antigravity"))
+    expect(await page.text()).toContain('data-provider-card="antigravity"')
+  })
+
+  it("runs the generated policy and permits only declared client MCP calls", async () => {
+    const { send } = fixture()
+    const response = await send(initial("POLICY_PROBE"))
+    expect(response.status).toBe(200)
+    expect((await decode(response)).stop_reason).toBe("tool_use")
+  })
+
+  it("bounds activity to the past hour independently of the request-history ring", () => {
+    const { runtime } = fixture()
+    const base = { requestId: "activity", durationMs: 1, model: "fixture", status: 200, inputTokens: 2, outputTokens: 3, cacheReadTokens: 0 }
+    runtime.record({ ...base, timestamp: Date.now() - 7200000 })
+    for (let n = 0; n < 600; n++) runtime.record({ ...base, timestamp: Date.now() })
+    expect(runtime.requests.length).toBe(500)
+    expect(runtime.activity()).toMatchObject({requests:600,inputTokens:1200,outputTokens:1800})
+    expect(runtime.totals.requests).toBe(601)
+  })
+
+  it("does not deliver a second client tool when the CLI retries its MCP request", async () => {
+    const { send } = fixture()
+    const request = initial("RPC_RETRY")
+    const first = await decode(await send(request))
+    const call = first.content.find(b => b.type === 'tool_use')!
+    const answer = await decode(await send({...request,messages:[...request.messages,{role:'assistant',content:first.content},{role:'user',content:[{type:'tool_result',tool_use_id:call.id,content:'once'}]}]}))
+    expect(answer.stop_reason).toBe('end_turn')
+    expect(answer.content[0]?.text).toBe('once|once')
+  })
+
+  it("returns provider navigation without waiting for CLI quota and joins its probes on close", async () => {
+    const { server, runtime } = fixture()
+    const before = Date.now()
+    const response = await server.app.fetch(new Request('http://local/providers/status'))
+    expect(response.status).toBe(200)
+    expect(Date.now() - before).toBeLessThan(500)
+    await runtime.close()
+    expect(runtime.runs.size).toBe(0)
+  })
+
 })

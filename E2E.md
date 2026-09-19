@@ -18,7 +18,7 @@ opt-in gate consumes account quota. `E2E_AGY_MODEL` selects an actual account
 model slug; `MERIDIAN_AGY_PATH` and `E2E_PI_BIN` select installed binaries.
 It never uses a Gemini API key or the Python SDK.
 
-The built Node server runs on an ephemeral loopback port with the experimental
+The built Node server runs on an ephemeral loopback port with the
 Antigravity tool bridge explicitly enabled. The gate checks live text, a random
 HTTP client tool receipt, completed-history replay, then actual Pi streaming
 read/write tool rounds. Pi configuration, context discovery and files are
@@ -42,6 +42,45 @@ owned subprocesses. The CLI's own account conversation/project records persist.
 HTTP requests for the read/write loop, copied the random client-only file
 exactly, and returned its value. The CLI version was unchanged across the run;
 server and subprocess shutdown completed successfully.
+
+The extended native gate runs the actual macOS app with disposable app data and
+an app-managed combined service:
+
+```sh
+npm run build
+npm ci --prefix apps/desktop
+npm run build --prefix apps/desktop
+env -u ELECTRON_RUN_AS_NODE apps/desktop/node_modules/.bin/electron \
+  scripts/e2e-antigravity-desktop.cjs
+```
+
+It verifies the provider navigation and managed setting, executes the same Pi
+file-copy flow through `/antigravity`, sends a real `claude-haiku-4-5` request
+through the ordinary route, checks both providers' activity and menu-bar quota
+presentation, and stops the owned service. It saves screenshots and state.
+`E2E_MERIDIAN_URL` can target an already-running Antigravity URL (including the
+`/antigravity` prefix); the standalone gate never stops an external service.
+
+Retained hardening failures: `meridian-agy-e2e-mbAvPv` caught CLI timestamps
+being copied into file content. Explicit `meridian_client_result` JSON boundaries
+fixed that exact-byte failure; subsequent actual Pi runs passed. The desktop
+`Movmeo` artifact caught `Providers: TimeoutError` while live quota reads blocked
+the eight-second desktop API deadline. Provider snapshots now return current
+local activity immediately and refresh quota facts in the background. Direct
+regression tests cover stalled quota reads and retaining stale desktop data;
+the native gate waits for the asynchronously refreshed provider snapshot without
+repeating any model or tool operation.
+
+**Verified 2026-09-18 (extended gate):** actual macOS arm64 Electron 44.3.0
+app, bundled Node 22.23.2, official agy 1.2.7, Gemini 3.8 Flash Low, Pi 0.72.1,
+and Claude Agent SDK / `claude-haiku-4-5`. The final native artifact is
+`meridian-agy-desktop-DvFSo0`; the nested live client artifact is
+`meridian-agy-e2e-E1r1RV`. All native checks passed, including separate routes,
+exact Pi copy, fresh activity from both providers, menu-bar quotas and shutdown.
+The same app-owned service's provider endpoint responded in 2 ms during live
+browser inspection. Web provider navigation was inspected at desktop and 390px
+phone widths; the final phone layout had no horizontal page overflow. This
+establishes the macOS text/tool path, not Linux, Windows or full Claude parity.
 
 ## Quick Start
 

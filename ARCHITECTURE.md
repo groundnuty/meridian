@@ -4,7 +4,7 @@ A local proxy that bridges Anthropic- and OpenAI-compatible clients to the Claud
 
 ## Request Flow
 
-### Experimental Antigravity runtime
+### Antigravity runtime and combined provider service
 
 `backend: "antigravity"` (or `MERIDIAN_BACKEND=antigravity`) selects a separate
 runtime at the public server entrypoint before Claude authentication, sessions,
@@ -25,6 +25,15 @@ Completed requests have no cached mapping; the next turn replays client
 history. Native Claude transcript lifecycle and lineage persistence cannot be
 applied to Antigravity. `ProxyInstance.close()` joins owned subprocesses;
 direct fetch embedders use `closeBackend()`.
+
+`backend: "combined"` retains the Claude listener and mounts Antigravity at
+`/antigravity/*`, with independent admission, processes, quotas and shutdown.
+The `/providers` page and `/providers/status` report both without mixing account
+identities or quota percentages. `providerStatus.ts` normalizes provider facts;
+`telemetry/providerView.ts` is shared pure presentation for the web and desktop.
+CLI quota reads are single-flight and cached, preserving stale readings on
+failure. Only process-local activity counters and bounded request metadata are
+kept by the Antigravity runtime; Claude session-cache ownership is unchanged.
 
 See [the backend guide](docs/antigravity.md) for the explicit permission opt-in,
 capability errors and recovery limits. Contract work is tracked in #1073.

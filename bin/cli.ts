@@ -42,7 +42,7 @@ Options:
 Environment variables:
   MERIDIAN_PORT                     Port to listen on (default: 3456)
   MERIDIAN_HOST                     Host to bind to (default: 127.0.0.1)
-  MERIDIAN_BACKEND                  claude (default) or antigravity (experimental)
+  MERIDIAN_BACKEND                  claude (default), antigravity, or combined
   MERIDIAN_AGY_PATH                 Official agy executable (default: agy)
   MERIDIAN_AGY_ALLOW_TOOL_BRIDGE     Opt into Antigravity client-owned tools (1)
   MERIDIAN_PASSTHROUGH              Enable passthrough mode (tools forwarded to client)

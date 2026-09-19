@@ -28,3 +28,10 @@ test('diagnostic search retains recent matches and orders newest first', () => {
   expect(filterLogs(data, ' EVENT 49 ').map(row => row.timestamp)).toEqual([499, 498, 497, 496, 495, 494, 493, 492, 491, 490, 49])
   expect(data[0]?.timestamp).toBe(499)
 })
+
+// Provider choice is independent of text search and error filtering.
+test('request provider filter separates Google-backed calls from Claude', () => {
+  const rows = [{requestId:'one',provider:'antigravity',model:'gemini',status:200,timestamp:1},{requestId:'two',model:'haiku',status:500,timestamp:2}]
+  expect(filterRequests(rows, '', 'all', 'antigravity').map(r => r.requestId)).toEqual(['one'])
+  expect(filterRequests(rows, '', 'errors', 'claude').map(r => r.requestId)).toEqual(['two'])
+})

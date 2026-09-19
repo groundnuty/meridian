@@ -1,3 +1,4 @@
+import { parseProviderSnapshot } from '../../../src/proxy/backends/providerStatus'
 import { createRequire } from 'node:module'
 import { stripVTControlCharacters } from 'node:util'
 import { catalogPlugin, pluginCatalog, registerPlugin } from './pluginCatalog'
@@ -84,6 +85,8 @@ export class Manager {
     const input = object(value)
     const result = { ...this.preferences }
     if (input.mode !== undefined) { if (input.mode !== 'managed' && input.mode !== 'attached') throw new Error('Unknown service mode'); result.mode = input.mode }
+    if (input.backend !== undefined) { if (!['claude', 'antigravity', 'combined'].includes(String(input.backend))) throw new Error('Unknown backend'); result.backend = input.backend as Preferences['backend'] }
+    if (typeof input.allowAntigravityTools === 'boolean') result.allowAntigravityTools = input.allowAntigravityTools
     if (input.endpoint !== undefined) result.endpoint = endpoint(input.endpoint)
     if (input.port !== undefined) result.port = port(input.port)
     for (const key of ['autoStart', 'notifications', 'notificationCritical', 'notificationRequests', 'notificationCache', 'notificationQuota', 'openWindowAtLaunch'] as const) if (typeof input[key] === 'boolean') result[key] = input[key]
@@ -107,12 +110,12 @@ export class Manager {
     const input = object(value)
     const next = this.validatePreferences({ ...input, selected: undefined, previous: undefined })
     if (typeof input.apiKey === 'string') next.apiKey = input.apiKey.trim() || undefined
-    const connectionChanged = next.mode !== this.preferences.mode || next.port !== this.preferences.port || next.endpoint !== this.preferences.endpoint || next.apiKey !== this.preferences.apiKey
+    const connectionChanged = next.backend !== this.preferences.backend || next.allowAntigravityTools !== this.preferences.allowAntigravityTools || next.mode !== this.preferences.mode || next.port !== this.preferences.port || next.endpoint !== this.preferences.endpoint || next.apiKey !== this.preferences.apiKey
     if ((this.child || this.adopted) && connectionChanged) throw new Error('Stop the managed service, or return the adopted service to headless, before changing its connection.')
     const previous = this.preferences
     this.preferences = next
     try { await this.save() } catch (error) { this.preferences = previous; throw error }
-    if (connectionChanged) { this.detector = new IncidentDetector(); this.state.incidents = []; await this.persistIncidents() }
+    if (connectionChanged) { this.state.providers = undefined; this.detector = new IncidentDetector(); this.state.incidents = []; await this.persistIncidents() }
     await this.refresh()
   }
   snapshot(): DesktopState {
@@ -152,13 +155,29 @@ export class Manager {
         try { return { key: key as keyof typeof routes, value: await this.api(route) } }
         catch (error) { return { key: key as keyof typeof routes, value: null, error: redact(String(error)) } }
       }))
+      // Optional on older Meridian versions. Provider data has its own scope;
+      // never feed Google quota windows into Claude's profile switcher.
+      try {
+        this.state.providers = parseProviderSnapshot(await this.api('/providers/status'))
+      } catch (error) {
+        if (String(error).includes('HTTP 404')) this.state.providers = undefined
+        else {
+          this.state.dataErrors.push(redact(`Providers: ${String(error)}`))
+          if (this.state.providers) this.state.providers = { ...this.state.providers, fetchedAt: Date.now(), providers: this.state.providers.providers.map(p => p.enabled ? { ...p, status: 'unavailable', error: 'Provider refresh failed. Last known data shown.', accounts: p.accounts.map(a => ({ ...a, error: a.error || 'Usage refresh failed' })) } : p) }
+        }
+      }
       this.state.health = health
       this.state.running = text(object(health).version)
       for (const item of data) { this.state[item.key] = item.value; if (item.error) this.state.dataErrors.push(item.error) }
+      if (this.state.providers?.providers.some(p => p.id === 'claude' && p.enabled) && this.state.providers.providers.some(p => p.id === 'antigravity' && p.enabled)) {
+        try { this.state.requests = [...rows(this.state.requests).map(r => ({ ...r, provider: 'claude' })), ...rows(await this.api('/antigravity/telemetry/requests'))].sort((a, b) => Number(object(b).timestamp) - Number(object(a).timestamp)).slice(0, 500) }
+        catch (error) { this.state.dataErrors.push(redact(`Antigravity requests: ${String(error)}`)) }
+      }
       for (const incident of this.detector.collect(this.state.requests, this.state.quota)) this.addIncident(incident)
       this.state.lastChecked = Date.now()
       await this.inspectOwnership()
     } catch (error) {
+      this.state.providers = undefined
       this.state.health = null; this.state.running = undefined; this.state.lastChecked = undefined
       this.state.quota = null; this.state.requests = []; this.state.summary = null; this.state.logs = []; this.state.profiles = null; this.state.plugins = null; this.state.features = null
       this.state.dataErrors = [redact(`Cannot reach ${this.baseUrl()}: ${String(error)}`)]
@@ -369,7 +388,7 @@ export class Manager {
     this.stopping = false; this.desiredRunning = true
     const child = spawn(this.options.node, ['--import', this.options.runner, entry], {
       cwd: this.adopted?.workingDirectory || homedir(),
-      env: { ...this.environment(), ...this.inheritedEnvironment, ...this.options.serviceEnvironment, MERIDIAN_PORT: String(this.preferences.port), MERIDIAN_HOST: '127.0.0.1', MERIDIAN_API_KEY: this.preferences.apiKey || '', MERIDIAN_SHUTDOWN_GRACE_MS: '30000' },
+      env: { ...this.environment(), ...this.inheritedEnvironment, ...this.options.serviceEnvironment, MERIDIAN_PORT: String(this.preferences.port), MERIDIAN_HOST: '127.0.0.1', MERIDIAN_API_KEY: this.preferences.apiKey || '', MERIDIAN_SHUTDOWN_GRACE_MS: '30000', ...(this.preferences.backend ? { MERIDIAN_BACKEND: this.preferences.backend } : {}), ...(this.preferences.allowAntigravityTools !== undefined ? { MERIDIAN_AGY_ALLOW_TOOL_BRIDGE: this.preferences.allowAntigravityTools ? '1' : '0' } : {}) },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     })
     this.child = child
@@ -402,17 +421,21 @@ export class Manager {
       })
       const deadline = Date.now() + 60000
       let lastError = 'No HTTP health response'
+      let reportedBackend = ''
       while (Date.now() < deadline) {
         if (this.child !== child || child.exitCode !== null || child.signalCode !== null) throw new Error('Meridian exited during startup.')
         try {
           const health = await this.api('/health')
           if (!isMeridianHealth(health) || object(health).version !== selected) throw new Error('The service did not report the selected Meridian version.')
           if (process.platform === 'darwin' && await listeningPid(this.preferences.port) !== child.pid) throw new Error('The listening process is not owned by this app.')
+          reportedBackend = text(object(health).backend)
           ready = true; break
         } catch (error) { lastError = String(error) }
         await new Promise(resolve => setTimeout(resolve, 200))
       }
       if (!ready) throw new Error(`Startup verification failed: ${lastError}`)
+      const requestedBackend = this.preferences.backend
+      if (requestedBackend && requestedBackend !== 'claude' && reportedBackend !== requestedBackend) throw new Error('This Meridian installation does not support the selected providers. Install a version with Antigravity support, or select Claude.')
       await this.refresh()
     } catch (error) { await this.stop(); throw error }
     this.publish()

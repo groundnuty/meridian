@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { providerPageHtml } from "../telemetry/providerPage"
 import { landingHtml } from "../telemetry/landing"
 import { dashboardHtml } from "../telemetry/dashboard"
 import { settingsPageHtml } from "../telemetry/settingsPage"
@@ -16,6 +17,7 @@ import { pluginPageHtml } from "../proxy/plugins/pluginPage"
 import { profileBarCss, profileBarHtml, profileBarJs } from "../telemetry/profileBar"
 
 const allPages: Array<[string, string]> = [
+  ["providers", providerPageHtml],
   ["landing", landingHtml],
   ["dashboard", dashboardHtml],
   ["settings", settingsPageHtml],
@@ -31,7 +33,7 @@ describe("shared site header", () => {
     expect(profileBarHtml).toContain("<svg")
     expect(profileBarHtml).toContain("Meridian")
     // Full site nav
-    for (const href of ["/telemetry", "/profiles", "/settings", "/plugins"]) {
+    for (const href of ["/providers", "/telemetry", "/profiles", "/settings", "/plugins"]) {
       expect(profileBarHtml).toContain(`href="${href}"`)
     }
   })
