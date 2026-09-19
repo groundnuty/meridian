@@ -145,9 +145,11 @@ export const profileBarCss = `
     background: rgba(188,140,255,0.12);
     border: 1px solid rgba(188,140,255,0.35);
     cursor: default;
-    .meridian-header .mh-profile.following { border-color: var(--accent2, #bc8cff); }
+  }
+  .meridian-header .mh-profile.following { border-color: var(--accent2, #bc8cff); }
   .meridian-header .mh-profile .mh-profile-follow {
-    color: var(--accent2, #bc8cff); font-size: 10px;  }
+    color: var(--accent2, #bc8cff); font-size: 10px;
+  }
   .meridian-header .mh-status {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 11px; color: var(--muted, #8b949e); white-space: nowrap;
