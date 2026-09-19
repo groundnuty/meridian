@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { rm } from 'node:fs/promises'
 import { join, resolve, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -11,7 +12,13 @@ import { AntigravityRuntime } from '../proxy/backends/antigravityRuntime'
 import { createAntigravityServer } from '../proxy/backends/antigravity'
 import { DEFAULT_PROXY_CONFIG } from '../proxy/types'
 const roots: string[] = [], closing: Array<() => Promise<void>> = []
-afterEach(async () => { for (const close of closing.splice(0)) await close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => {
+  for (const close of closing.splice(0)) await close()
+  // libsql's unreferenced native statement wrappers can retain Windows file
+  // handles after close. Collect them before asserting the fixture is removable.
+  if (process.platform === 'win32') Bun.gc(true)
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+})
 const root = () => { const path = mkdtempSync(join(tmpdir(), 'agy-state-test-')); roots.push(path); return path }
 const scope = agResponseScope(new Headers())
 const response = { id: 'r', output: [], status: 'completed' }

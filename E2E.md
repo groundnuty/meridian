@@ -5419,3 +5419,9 @@ including response input estimates without CLI execution and disabled-reuse
 capability reporting. The complete suite before these final corrections passed
 4,650 tests in 15 isolated groups; final-head full-suite/CI results are recorded
 in the PR.
+
+Windows smoke on `45f9d5cd` reached the new state assertions but failed fixture
+removal with `EBUSY` after SQLite close. The tests now collect unused native
+statement wrappers and use bounded asynchronous removal retries; they still fail
+if the fixture cannot be removed. This is cleanup handling, not authenticated
+Windows model evidence.
