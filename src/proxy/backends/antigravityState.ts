@@ -5,8 +5,12 @@ import { dirname, resolve } from 'node:path'
 /** Meridian-owned state only. Never opens agy's credentials or native transcripts. */
 export class AgState {
   private closed = false
-  private readonly db: Database.Database
-  private readonly unlock: () => void
+  private connection?: Database.Database
+  private unlock?: () => void
+  private get db(): Database.Database {
+    if (!this.connection) throw new Error('Antigravity state is closed')
+    return this.connection
+  }
   constructor(path: string) {
     path = resolve(path)
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
@@ -18,13 +22,13 @@ export class AgState {
     this.unlock = lockState(path + '.lock')
     let opened: Database.Database | undefined
     try {
-    this.db = opened = new Database(path)
+    this.connection = opened = new Database(path)
     this.db.pragma('busy_timeout = 5000')
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('secure_delete = ON')
     this.db.exec('CREATE TABLE IF NOT EXISTS ag_state (kind TEXT NOT NULL, id TEXT NOT NULL, scope TEXT NOT NULL, json TEXT NOT NULL, bytes INTEGER NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(kind,id)); CREATE INDEX IF NOT EXISTS ag_state_expiry ON ag_state(expires)')
     this.prune()
-    } catch (error) { try { opened?.close() } finally { this.unlock() }; throw error }
+    } catch (error) { try { opened?.close() } finally { this.unlock?.() }; throw error }
   }
   private prune() { this.db.prepare('DELETE FROM ag_state WHERE expires <= ?').run(Date.now()) }
   put(kind: string, id: string, scope: string, json: string, expires: number, maxEntries: number, maxBytes: number) {
@@ -54,7 +58,16 @@ export class AgState {
     return (this.db.prepare('SELECT json FROM ag_state WHERE kind = ? ORDER BY rowid DESC').all(kind) as Array<{ json: string }>).map(row => row.json)
   }
   delete(kind: string, id: string, scope: string) { this.db.prepare('DELETE FROM ag_state WHERE kind = ? AND id = ? AND scope = ?').run(kind, id, scope) }
-  close() { if (!this.closed) { this.closed = true; try { this.db.close() } finally { this.unlock() } } }
+  close() {
+    if (this.closed) return
+    this.closed = true
+    // libsql 0.5.x close drops the connection but its native database wrapper
+    // retains resources until collected. Do not keep that wrapper or the guard
+    // closure alive merely because a stopped service still references AgState.
+    const database = this.connection, unlock = this.unlock
+    this.connection = undefined; this.unlock = undefined
+    try { database?.close() } finally { unlock?.() }
+  }
 }
 
 function lockState(path: string): () => void {

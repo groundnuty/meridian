@@ -14,10 +14,18 @@ import { DEFAULT_PROXY_CONFIG } from '../proxy/types'
 const roots: string[] = [], closing: Array<() => Promise<void>> = []
 afterEach(async () => {
   for (const close of closing.splice(0)) await close()
-  // libsql's unreferenced native statement wrappers can retain Windows file
-  // handles after close. Collect them before asserting the fixture is removable.
-  if (process.platform === 'win32') Bun.gc(true)
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  // Finalize native wrappers after a turn of the event loop. Keep removal an
+  // assertion: retries are bounded and a retained handle still fails the test.
+  for (const root of roots.splice(0)) {
+    for (let attempt = 0; ; attempt++) {
+      if (process.platform === 'win32') { await new Promise(resolve => setTimeout(resolve, 50)); Bun.gc(true) }
+      try { await rm(root, { recursive: true, force: true }); break }
+      catch (error) {
+        if (process.platform !== 'win32' || attempt >= 9 || !(error instanceof Error && 'code' in error && ['EBUSY','EPERM','ENOTEMPTY'].includes(String(error.code)))) throw error
+        await new Promise(resolve => setTimeout(resolve, 200))
+      }
+    }
+  }
 })
 const root = () => { const path = mkdtempSync(join(tmpdir(), 'agy-state-test-')); roots.push(path); return path }
 const scope = agResponseScope(new Headers())

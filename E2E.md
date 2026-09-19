@@ -5425,3 +5425,10 @@ removal with `EBUSY` after SQLite close. The tests now collect unused native
 statement wrappers and use bounded asynchronous removal retries; they still fail
 if the fixture cannot be removed. This is cleanup handling, not authenticated
 Windows model evidence.
+
+The first cleanup-only change did not resolve `EBUSY` on Windows. Inspection of
+[libsql 0.5.29 close](https://github.com/tursodatabase/libsql-js/blob/v0.5.29/src/database.rs)
+showed that native database/statement wrappers can outlive connection close.
+`AgState.close()` now releases its database and guard-closure references as well
+as closing them. Fixture cleanup explicitly yields for finalization and retries
+bounded transient Windows deletion errors; exhaustion still fails the test.
