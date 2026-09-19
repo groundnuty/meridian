@@ -82,6 +82,38 @@ browser inspection. Web provider navigation was inspected at desktop and 390px
 phone widths; the final phone layout had no horizontal page overflow. This
 establishes the macOS text/tool path, not Linux, Windows or full Claude parity.
 
+### Antigravity coding-tool acceptance gate
+
+```sh
+npm run build
+node scripts/e2e-antigravity-tools.mjs
+```
+
+This gate prioritizes actual client tools: Pi must recover from a deliberately
+missing file, read a Unicode-named source file, edit it, execute it with `bash`,
+and write its exact output (including the trailing newline) with `write`.
+The relay verifies streaming, tool identities, correlated results and the
+missing-file `is_error` response. Both the modified source and output file are
+compared byte-for-byte. It uses an isolated workspace and Pi configuration,
+consumes subscription quota, records requests/logs/report, and stops owned
+processes. It never automatically reruns a failed model attempt.
+
+**Verified 2026-09-18:** macOS arm64, Node 22.22.3, official agy 1.2.7,
+Gemini 3.8 Flash Low, Pi 0.72.1. Artifact `meridian-agy-tools-zQKqd6` passed
+all five acceptance checks over seven streaming HTTP requests. The tool trace
+was read (expected missing-file error), read, edit (schema validation error),
+edit, bash, write. The first edit used `old_text`/`new_text`; Pi required
+`oldText`/`newText`. That error reached the model, which corrected its arguments
+within the same live conversation. No model rerun was used to obtain the pass.
+
+A deterministic transport regression separately reproduced corruption when an
+emoji in a tool argument spanned MCP HTTP chunks (`🧪` became replacement
+characters). The runtime now bounds and joins raw bytes before UTF-8 decoding;
+the test fails before the fix and passes after it. The live gate verifies actual
+Unicode paths/content, while the regression forces the otherwise nondeterministic
+network split. This evidence covers this model/client/platform, not every client
+or pending-tool recovery after process death.
+
 ## Quick Start
 
 ```bash

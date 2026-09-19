@@ -41,6 +41,23 @@ async function main() {
     return value.result
   }
   const { tools } = await rpc('tools/list')
+  if (prompt.includes('UNICODE_CHUNKS')) {
+    const { request } = require('node:http')
+    const input = { key: 'café/你好/🧪.txt' }
+    const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: ++nextId, method: 'tools/call', params: { name: tools[0].name, arguments: input } }))
+    const split = body.indexOf(Buffer.from('🧪')) + 2
+    const result = await new Promise((resolve, reject) => {
+      const req = request(url, { method: 'POST', headers: { 'content-type': 'application/json' } }, res => {
+        let text = ''; res.on('data', chunk => text += chunk); res.on('end', () => resolve(JSON.parse(text)))
+      })
+      req.on('error', reject)
+      req.write(body.subarray(0, split))
+      setTimeout(() => req.end(body.subarray(split)), 50)
+    })
+    if (result.error) throw new Error(result.error.message)
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'UNICODE_OK' } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
   let answer = 'READY'
   if (tools.length) {
     emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 100, output_tokens: 5 } } })

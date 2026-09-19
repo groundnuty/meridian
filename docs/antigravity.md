@@ -148,6 +148,12 @@ that a random file value entered through Pi's own tool result. Run after
 `npm run build`; it consumes account quota. See [E2E.md](../E2E.md#antigravity-subscription-cli-backend)
 for the recorded versions and outcome.
 
+For a full client coding loop, run `node scripts/e2e-antigravity-tools.mjs`
+after building. It verifies actual Pi `read`, `edit`, `bash` and `write`, recovery
+from a tool error, Unicode paths, and exact source/output bytes. This is separate
+from the basic read/write gate; neither establishes arbitrary client compatibility
+or recovery of a pending process after a crash.
+
 Implementation tracks [#1073](https://github.com/rynfar/meridian/issues/1073),
 following the [research PR](https://github.com/rynfar/meridian/pull/1050).
 

@@ -65,6 +65,15 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(answer.usage.input_tokens).toBe(100) // Not the earlier 100-token tool request.
     expect((await send(followup)).status).toBe(409) // No duplicate execution.
   })
+  it("preserves UTF-8 tool arguments split across MCP network chunks", async () => {
+    const { send } = fixture()
+    const request = initial("UNICODE_CHUNKS")
+    const first = await decode(await send(request))
+    const call = first.content.find(b => b.type === "tool_use")!
+    expect(call.input).toEqual({ key: "café/你好/🧪.txt" })
+    const response = await send({ ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "done" }] }] })
+    expect((await decode(response)).content[0]?.text).toBe("UNICODE_OK")
+  })
   it("serializes a parallel upstream batch into individually correlated client calls", async () => {
     const { send } = fixture()
     const request = initial("PARALLEL2")

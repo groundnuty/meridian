@@ -339,11 +339,16 @@ export class AntigravityRuntime {
       const run = this.runs.get((req.url ?? "").slice(1))
       if (!run) return reply(res, 404, { error: "Unknown turn" })
       if (req.method !== "POST") return reply(res, 405, {})
-      let raw = ""
+      // Decode only after joining bytes: a UTF-8 character may span HTTP chunks.
+      const chunks: Buffer[] = []
+      let bytes = 0
       for await (const chunk of req) {
-        raw += String(chunk)
-        if (Buffer.byteLength(raw) > 1024 * 1024) throw new Error("MCP body too large")
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        bytes += buffer.length
+        if (bytes > 1024 * 1024) throw new Error("MCP body too large")
+        chunks.push(buffer)
       }
+      const raw = Buffer.concat(chunks, bytes).toString("utf8")
       if (req.headers.origin) return reply(res, 403, { error: "Browser origins are not allowed" })
       const rpc = rpcSchema.parse(JSON.parse(raw)); rpcId = rpc.id
       if (rpc.id === undefined) { res.writeHead(202); res.end(); return }
