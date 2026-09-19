@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import { spawnSync } from 'node:child_process'
+import { createImageFixture } from './lib-antigravity-image-checks.mjs'
 import { startProxyServer } from '../dist/server.js'
 const root = await mkdtemp(join(tmpdir(), 'meridian-agy-capabilities-'))
 console.log(`Artifacts: ${root}`)
@@ -23,6 +24,7 @@ try {
     assert.equal(response.status, 200, text)
     return body.stream ? text : JSON.parse(text)
   }
+  if (process.env.E2E_CAPABILITIES_LARGE_IMAGE_ONLY !== '1') {
   const receipt = randomUUID()
   const format = { type: 'json_schema', schema: { type: 'object', properties: { receipt: { type: 'string', enum: [receipt] }, count: { type: 'integer' } }, required: ['receipt', 'count'], additionalProperties: false } }
   for (const stream of [false, true]) {
@@ -61,6 +63,13 @@ try {
     report.passed.push(`forced ${choice.type} tool followed by automatic continuation${output_config ? ' with native schema output' : ''}`)
     console.log('PASS', report.passed.at(-1))
   }
+  }
+  const image = await createImageFixture(root, 'large-image', { large: true })
+  assert(image.data.length > 5 * 1024 * 1024, 'Fixture must exercise multi-megabyte Node parsing')
+  const result = await send({ messages: [{ role: 'user', content: [{ type: 'text', text: 'Return only the six characters visibly printed in this image.' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: image.data } }] }] })
+  assert(result.content.map(b => b.text || '').join('').includes(image.expected), JSON.stringify(result))
+  report.passed.push('multi-megabyte image through production Node and actual CLI vision')
+  console.log('PASS', report.passed.at(-1))
   report.cliAtEnd = spawnSync(process.env.MERIDIAN_AGY_PATH || 'agy', ['--version'], { encoding: 'utf8' }).stdout.trim()
   assert.equal(report.cliAtEnd, report.cli)
 } catch (error) { report.error = String(error); throw error }

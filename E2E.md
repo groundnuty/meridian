@@ -180,7 +180,8 @@ node scripts/e2e-antigravity-capabilities.mjs
 E2E_SESSION_CAPABILITIES=1 node scripts/e2e-antigravity-opencode-session.mjs
 ```
 
-The first gate checks native JSON-schema output in JSON and SSE responses,
+The first gate checks a multi-megabyte PNG through production Node and actual
+CLI vision, native JSON-schema output in JSON and SSE responses,
 text stops in both modes (including process cleanup), forced any/named client
 tools, and a named-tool continuation that finishes with native structured output.
 The second uses actual Pi/OpenCode attachments and each client's image read
@@ -198,6 +199,12 @@ checks passed in `meridian-agy-capabilities-VXKid6`. All five actual-client chec
 passed in `meridian-agy-opencode-session-c4THXr`, including exact visual codes
 and exact structured object fields. The native schema result is independently
 validated; intermediate native finish metadata is never delivered as JSON.
+
+A 4 MiB raw image exposed a V8 stack overflow in the repeated-group base64
+regex. The replacement uses a flat character check plus canonical decoding.
+The production-Node regression test and live `meridian-agy-capabilities-UFHQLs`
+passed with a request exceeding 5 MiB and an exact random visual code on
+2026-09-19. `E2E_CAPABILITIES_LARGE_IMAGE_ONLY=1` isolates this check.
 
 Retained evidence and corrections:
 

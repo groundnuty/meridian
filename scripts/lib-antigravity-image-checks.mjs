@@ -3,15 +3,16 @@ import { spawn, spawnSync } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-async function fixture(root, name) {
+export async function createImageFixture(root, name, { large = false } = {}) {
   const path = join(root, name + '.png')
   const result = spawnSync('python3', ['-c', `from PIL import Image, ImageDraw, ImageFont
 import secrets,sys
 code=secrets.token_hex(3).upper()
-im=Image.new('RGB',(720,160),'white')
+large=sys.argv[2]=='large'
+im=Image.new('RGB',(1200,1200) if large else (720,160),'white')
 ImageDraw.Draw(im).text((30,35),code,font=ImageFont.truetype('/System/Library/Fonts/Menlo.ttc',72),fill='black')
-im.save(sys.argv[1])
-print(code)`, path], { encoding: 'utf8' })
+im.save(sys.argv[1],compress_level=0 if large else 6)
+print(code)`, path, large ? 'large' : 'small'], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   return { path, expected: result.stdout.trim(), data: (await readFile(path)).toString('base64') }
 }
@@ -25,7 +26,7 @@ export async function verifyImageClients({ root, api, model, proxyUrl, report })
   const env = { ...process.env, PI_CODING_AGENT_DIR: piConfig, PI_OFFLINE: '1', PI_TELEMETRY: '0' }
   for (const key of Object.keys(env)) if (/^(ANTHROPIC_|CLAUDE_|GEMINI_API_KEY|GOOGLE_API_KEY)/.test(key)) delete env[key]
   for (const tool of ['opencode', 'structured'].includes(process.env.E2E_IMAGE_CLIENT) ? [] : [false, true]) {
-    const image = await fixture(root, tool ? 'pi-read' : 'pi-input')
+    const image = await createImageFixture(root, tool ? 'pi-read' : 'pi-input')
     const args = ['--provider', 'meridian-agy', '--model', model.modelID, '--thinking', 'off', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-themes', '--system-prompt', 'Read the six characters visibly printed in the image. Reply with those exact characters.', ...(tool ? ['--tools', 'read'] : ['--no-tools']), '-p', ...(tool ? [`Use your read tool to inspect ${image.path}, then return the six visible characters.`] : ['@' + image.path, 'Return the six visible characters in the attached image.'])]
     const child = spawn(process.env.E2E_PI_BIN || 'pi', args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
@@ -38,7 +39,7 @@ export async function verifyImageClients({ root, api, model, proxyUrl, report })
     console.log('PASS', report.passed.at(-1))
   }
   for (const tool of process.env.E2E_IMAGE_CLIENT === 'structured' ? [] : [false, true]) {
-    const image = await fixture(root, tool ? 'opencode-read' : 'opencode-input')
+    const image = await createImageFixture(root, tool ? 'opencode-read' : 'opencode-input')
     const session = await api('/session', { title: 'Image capability acceptance' })
     const parts = tool ? [{ type: 'text', text: `Use your read tool to inspect ${image.path} and return only the six visible characters. Do not use any other tools.` }] : [{ type: 'text', text: 'Return only the six characters visibly printed in this attached image. Do not use client tools.' }, { type: 'file', mime: 'image/png', filename: 'attachment.png', url: 'data:image/png;base64,' + image.data }]
     const result = await api(`/session/${session.id}/message`, { model, parts })

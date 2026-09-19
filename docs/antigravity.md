@@ -381,9 +381,10 @@ node scripts/e2e-antigravity-capabilities.mjs
 E2E_SESSION_CAPABILITIES=1 node scripts/e2e-antigravity-opencode-session.mjs
 ```
 
-The second gate needs Python Pillow and the macOS Menlo font to generate random
-visual fixtures, then uses actual Pi and OpenCode clients. It also checks
+Both gates need Python Pillow and the macOS Menlo font to generate random
+visual fixtures. The second uses actual Pi and OpenCode clients. It also checks
 OpenCode's own structured-output workflow. If using an OpenCode deny-all
 permission policy, explicitly allow its `StructuredOutput` tool when requesting
 that feature; a hidden tool cannot satisfy the client's format requirement. The first gate exercises native
-schema output, forced tool selection/continuation and text stops through JSON/SSE.
+schema output, forced tool selection/continuation, text stops through JSON/SSE
+and a multi-megabyte image request through production Node and live CLI vision.

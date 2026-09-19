@@ -19,7 +19,7 @@ export function classifyAgFailure(message: string): AntigravityError {
 const textBlock = z.object({ type: z.literal("text"), text: z.string() })
 const imageBlock = z.object({ type: z.literal("image"), source: z.object({
   type: z.literal("base64"), media_type: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
-  data: z.string().min(4).max(8 * 1024 * 1024).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+  data: z.string().min(4).max(8 * 1024 * 1024).regex(/^[A-Za-z0-9+/]*={0,2}$/).refine(data => data.length % 4 === 0, "Invalid base64 length"),
 }).strict() })
 const callBlock = z.object({ type: z.literal("tool_use"), id: z.string(), name: z.string(), input: z.record(z.string(), z.unknown()) })
 const resultBlock = z.object({
