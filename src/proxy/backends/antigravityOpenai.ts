@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { createSseTranslator, translateOpenAiToAnthropic, translateAnthropicToOpenAi, type AnthropicResponse, type AnthropicSseEvent } from '../openai'
 import { createResponsesSseTranslator, translateResponsesToAnthropic, translateAnthropicToResponses } from '../openaiResponses'
 import { AntigravityError } from './antigravityProtocol'
+import { AgResponseStore, agResponseScope } from './antigravityResponses'
 
 const json = z.record(z.string(), z.unknown())
 const args = z.string().refine(value => { try { return json.safeParse(JSON.parse(value)).success } catch { return false } }, 'Tool arguments must be a JSON object')
@@ -39,14 +40,46 @@ const responsesSchema = z.object({
   parallel_tool_calls: z.boolean().optional(), stream: z.boolean().optional(), max_output_tokens: z.number().int().positive().optional(),
   reasoning: z.object({ effort: z.enum(['low', 'medium', 'high']) }).strict().optional(),
   text: z.object({ format: z.union([z.object({ type: z.literal('text') }).strict(), z.object({ type: z.literal('json_schema'), name: z.string(), schema: json, strict: z.boolean().optional() }).strict()]) }).strict().optional(),
-  temperature: z.number().optional(), top_p: z.number().optional(), store: z.literal(false).optional(), metadata: z.record(z.string(), z.string()).optional(),
+  previous_response_id: z.string().min(1).max(128).nullable().optional(),
+  temperature: z.number().optional(), top_p: z.number().optional(), store: z.boolean().optional(), metadata: z.record(z.string(), z.string()).optional(),
 }).strict()
 
 /** Provider-specific validation prevents generic converters silently dropping unsupported fields. */
-export async function agOpenai(request: Request, raw: unknown, responses: boolean, messages: (request: Request) => Promise<Response>): Promise<Response> {
+export async function agOpenai(request: Request, raw: unknown, responses: boolean, messages: (request: Request) => Promise<Response>, store: AgResponseStore): Promise<Response> {
   const parsed = responses ? responsesSchema.safeParse(raw) : chatSchema.safeParse(raw)
   if (!parsed.success) throw new AntigravityError('Unsupported OpenAI request: ' + parsed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; '))
   const data = parsed.data
+  const responseRequest = 'input' in data ? data : undefined
+  const scope = agResponseScope(request.headers)
+  let savedInput: unknown[] = []
+  if (responseRequest) {
+    const incoming = typeof responseRequest.input === 'string' ? [{ role: 'user', content: responseRequest.input }] : responseRequest.input
+    let prefix: unknown[] = []
+    if (responseRequest.previous_response_id) {
+      const previous = store.get(responseRequest.previous_response_id, scope)
+      prefix = [...previous.input, ...z.array(z.unknown()).parse(previous.response.output)]
+    }
+    // Only input/output items carry forward. Instructions, tools and controls
+    // belong to this request, matching Responses API continuation semantics.
+    const input = [...prefix, ...incoming]
+    if (Buffer.byteLength(JSON.stringify(input)) > 8 * 1024 * 1024) throw new AntigravityError('Expanded Responses history exceeds 8 MiB; send compacted full input without previous_response_id', 413)
+    responseRequest.input = responsesSchema.shape.input.parse(input)
+    savedInput = structuredClone(input)
+  }
+  const decorate = (value: Record<string, unknown>, terminal = false) => {
+    if (!responseRequest) return value
+    Object.assign(value, {
+      store: responseRequest.store !== false, previous_response_id: responseRequest.previous_response_id ?? null,
+      instructions: responseRequest.instructions ?? null, metadata: responseRequest.metadata ?? {},
+      tools: responseRequest.tools ?? [], tool_choice: responseRequest.tool_choice ?? 'auto',
+      parallel_tool_calls: responseRequest.parallel_tool_calls ?? true,
+    })
+    if (terminal && responseRequest.store !== false) {
+      if (request.signal.aborted) throw new AntigravityError('Request cancelled', 499, 'api_error')
+      store.put(String(value.id), scope, savedInput, value)
+    }
+    return value
+  }
   // Preserve URL sources through the shared data-URL converter without doing
   // network I/O before runtime admission and attachment cancellation are active.
   const urls = new Map<string, string>()
@@ -94,13 +127,15 @@ export async function agOpenai(request: Request, raw: unknown, responses: boolea
   const ctx = { responseId: 'resp_agy_' + randomUUID().replaceAll('-', ''), completionId: 'chatcmpl-agy-' + randomUUID(), model: data.model, created: Math.floor(Date.now() / 1000), includeUsage: chat?.stream_options?.include_usage }
   if (!data.stream) {
     const value = await upstream.json() as AnthropicResponse
-    return Response.json(responses ? translateAnthropicToResponses({ ...value, content: value.content?.map(block => ({ ...block })) }, ctx) : translateAnthropicToOpenAi(value, ctx.completionId, ctx.model, ctx.created))
+    return Response.json(responses ? decorate(translateAnthropicToResponses({ ...value, content: value.content?.map(block => ({ ...block })) }, ctx), true) : translateAnthropicToOpenAi(value, ctx.completionId, ctx.model, ctx.created))
   }
   if (!upstream.body) throw new AntigravityError('Missing upstream stream', 502, 'api_error')
   const chatTranslate = createSseTranslator(ctx)
   const responseTranslate = createResponsesSseTranslator(ctx)
   const encoder = new TextEncoder()
   let pending = ''
+  let failed = false
+  let finished = false
   const stream = upstream.body.pipeThrough(new TextDecoderStream()).pipeThrough(new TransformStream<string, Uint8Array>({
     transform(chunk, controller) {
       pending += chunk
@@ -111,10 +146,15 @@ export async function agOpenai(request: Request, raw: unknown, responses: boolea
         const line = frame.split('\n').find(line => line.startsWith('data: '))
         if (!line) continue
         const event = JSON.parse(line.slice(6)) as AnthropicSseEvent & { error?: unknown }
+        if (event.type === 'message_stop') finished = true
         if (event.type === 'error') {
+          failed = true
           controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ type: 'error', error: event.error })}\n\n`))
         } else if (responses) {
-          for (const item of responseTranslate(event)) controller.enqueue(encoder.encode(`event: ${item.event}\ndata: ${JSON.stringify(item.data)}\n\n`))
+          for (const item of responseTranslate(event)) {
+            if (item.data.response) item.data.response = decorate(json.parse(item.data.response), !failed && ['response.completed', 'response.incomplete'].includes(item.event))
+            controller.enqueue(encoder.encode(`event: ${item.event}\ndata: ${JSON.stringify(item.data)}\n\n`))
+          }
         } else {
           const item = chatTranslate(event)
           if (item) controller.enqueue(encoder.encode(`data: ${JSON.stringify(item)}\n\n`))
@@ -126,7 +166,10 @@ export async function agOpenai(request: Request, raw: unknown, responses: boolea
         }
       }
     },
-    flush() { if (pending.trim()) throw new Error('Incomplete upstream SSE frame') },
+    flush() {
+      if (pending.trim()) throw new Error('Incomplete upstream SSE frame')
+      if (!finished && !failed) throw new Error('Upstream stream ended before message_stop')
+    },
   }))
   return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'x-accel-buffering': 'no' } })
 }

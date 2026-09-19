@@ -5321,3 +5321,25 @@ The refined panel was rechecked in the signed Mac package: active account first,
 colored usage bars, content-sized stopped state, restart, persisted snooze after
 relaunch, Resume alerts and Escape dismissal all worked. Disabling dashboard at
 launch left no visible app window; explicit Finder activation reopened it.
+
+### Antigravity stored Responses acceptance
+
+`node scripts/e2e-antigravity-responses-state.mjs` runs after `npm run build`
+against the real signed-in CLI. On 2026-09-19, macOS arm64 / agy 1.2.7 /
+Gemini 3.8 Flash Low passed five checks in
+`meridian-agy-responses-state-UQyJug`: JSON retrieval, streamed ID continuation
+with observed warm-process reuse, an independent fork with replacement
+instructions and `store: false`, a streamed function call completed by ID with a
+random client result, and deletion with surviving completed descendants.
+Artifacts include exact request/response bodies and a report in the OS temporary
+directory. This proves process-local API state, not durable native CLI recovery.
+The focused tests additionally cover credential scope, expiry, entry/byte limits,
+expanded-history admission, original image URL retention, cancellation and
+incomplete/failed streams.
+
+The updated storage disclosure was checked in the collaborative web preview
+(no horizontal overflow at 1280px) and the actual Electron provider page in
+`meridian-agy-desktop-OQj6ib`. The native check asserts the new response-ID text
+and captures the expanded capabilities. Its first harness launch inherited
+`ELECTRON_RUN_AS_NODE` and failed before app startup; running Electron with that
+variable unset exercised the actual app successfully.

@@ -449,8 +449,8 @@ Remaining boundaries:
 - Native attachment semantics differ from local adaptation: no native PDF
   citations, continuous video understanding, non-speech audio or generated media.
 - Warm native reuse ends on expiry/restart; no durable native session restoration.
-- Responses storage/`previous_response_id`, arbitrary OpenAI tools/formats and
-  universal third-party client compatibility are not implemented.
+- Durable Responses storage, arbitrary OpenAI tools/formats and universal
+  third-party client compatibility are not implemented.
 - Claude profile pools and SDK-specific plugin hooks cannot be applied to the
   Google account. The existing plugin `RequestContext` contains Claude SDK agents,
   hooks and settings; translating it would require a separate provider-aware
@@ -481,11 +481,39 @@ completed-history recovery, not durable exactly-once semantics or native resume.
 
 Chat Completions and Responses support text, data/HTTPS images, standard function
 tools and their full-history continuations, forced/parallel tool selection,
-JSON/SSE, matching Gemini effort and JSON schemas. Responses requires full input
-history and supports `store: false`; it does not implement stored responses,
-`previous_response_id`, custom/namespaced tools or audio/video OpenAI formats.
+JSON/SSE, matching Gemini effort and JSON schemas. Responses supports either full
+input history or `previous_response_id` with only new input, including function
+results. Custom/namespaced tools and audio/video OpenAI formats remain unsupported.
 Unsupported fields fail before dispatch instead of being silently dropped.
 This surface is not a claim of complete Codex compatibility.
+
+Responses are stored by default; `store: false` disables the response-ID snapshot
+for that turn (it does not disable the separate live CLI conversation). Use
+`GET /v1/responses/:id` to retrieve the completed JSON response and
+`DELETE /v1/responses/:id` to remove its snapshot. Both routes use normal Meridian
+authentication; snapshots are scoped to the supplied API credential. When no key
+is configured, callers without a credential share the local service scope.
+Combined mode prefixes these routes with `/antigravity`.
+
+Storage is process-local, with a fixed 30-minute lifetime, at most 256 entries,
+64 MiB of serialized state in total, and 16 MiB per entry. Oldest entries are
+removed under pressure; expired entries are removed on subsequent store access.
+Restart/shutdown clears storage. Missing, expired, deleted, evicted and unstored
+IDs return 404; clients can recover by resending their complete history. Expanded
+input is limited to 8 MiB before any model call. A response exceeding its storage
+budget fails rather than advertising a retrievable ID. Keep a client-side history
+for longer sessions and reliable recovery.
+
+Only input/output items carry forward through a response ID: resend the desired
+`instructions`, tools and controls on each call. Ordinary forks are independent;
+changing instructions or model causes full-history replay. Pending tool results
+still require the matching tool definitions and instruction contract. JSON and
+streaming responses are stored only on successful completion; failed/cancelled
+streams are not published. Deleting an ancestor does not delete already-created
+descendants or cancel native work. Retrieval streaming, input-item listing and
+background responses remain unsupported. These semantics follow the
+[Responses continuation contract](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
+with the explicit local retention limits above.
 
 `/v1/messages/count_tokens` returns `input_tokens`, `estimated: true`, the
 `x-meridian-token-count: estimate` header and an `estimation` object. It uses

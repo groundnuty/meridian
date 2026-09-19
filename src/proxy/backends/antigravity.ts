@@ -1,5 +1,6 @@
 import { estimateAgTokens } from "./antigravityTokens"
 import { agOpenai } from "./antigravityOpenai"
+import { AgResponseStore, agResponseScope } from "./antigravityResponses"
 import { AgTextStops } from "./antigravityStops"
 import { providerPageHtml } from '../../telemetry/providerPage'
 import { providerOverview, type ProviderUsage } from '../../telemetry/providerView'
@@ -35,6 +36,7 @@ async function readBody(request: Request): Promise<unknown> {
 
 export function createAntigravityServer(config: ProxyConfig, runtime = new AntigravityRuntime({ ...config.antigravity, maxConcurrent: config.antigravity?.maxConcurrent ?? config.maxConcurrent })): ProxyServer & { closeBackend(): Promise<void>; providerStatus(): Promise<ProviderUsage> } {
   if (config.profiles?.length || config.defaultProfile) throw new Error("Antigravity does not support Claude profile configuration")
+  const responses = new AgResponseStore()
   async function selectRun(body: AgRequest, signal: AbortSignal): Promise<AntigravityRun> {
     // Clients may append steering as text in the result message or as another
     // user message. Match the delivered assistant prefix before accepting either.
@@ -203,7 +205,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         { name: 'Client tools', status: runtime.options.allowToolBridge ? 'Available' : 'Disabled', detail: 'Parallel batches, exact result correlation and client-side approval. Native actions have separate operator controls.' },
         { name: 'Native browser', status: runtime.options.allowNativeBrowser ? 'Operator enabled' : 'Disabled', detail: 'Isolated Chrome via Chrome DevTools MCP 1.9.0; requires both installed locally. Native actions bypass client approval dialogs.' },
         { name: 'Native subagents', status: runtime.options.allowNativeSubagents ? 'Operator enabled' : 'Disabled', detail: 'Self/research agents inherit the guarded workspace and enabled client tools. Browser delegation requires its separate grant.' },
-        { name: 'OpenAI clients', status: 'Available', detail: 'Chat Completions and Responses with text, images, function tools, JSON and streaming. Full history is required.' },
+        { name: 'OpenAI clients', status: 'Available', detail: 'Chat Completions and Responses with text, images, function tools, JSON and streaming. Response IDs can continue recent stored turns; storage is local, bounded and expires after 30 minutes.' },
         { name: 'Documents and media', status: 'Local dependencies', detail: 'PDF pages use Poppler. Audio uses local Whisper; video uses sampled frames and a transcript. These are adapted inputs, not native multimodal understanding.' },
         { name: 'Token controls', status: 'Limited', detail: 'Token counts are estimates; output budgets are advisory. Exact token caps, numeric thinking budgets, sampling controls and native reasoning blocks are unavailable.' },
       ],
@@ -231,14 +233,20 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         if (runtime.draining) return Response.json({ status: "draining" }, { status: 503 })
         await runtime.initialize()
         await runtime.verifyAccount()
-        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, urlImages: !!runtime.options.allowToolBridge, documents: "local-poppler", audio: "local-whisper", video: "local-frames-and-transcript", nativeReasoning: false, nativeBrowser: !!runtime.options.allowNativeBrowser, nativeSubagents: !!runtime.options.allowNativeSubagents, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: false, conversationReuse: runtime.options.reuseConversations !== false ? "live-process" : false, parallelTools: true, tokenCounting: "estimate", openai: ["chat-completions", "responses"], toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory" }, processes: runtime.runs.size, activeProcesses: [...runtime.runs.values()].filter(run => run.active).length, pendingToolProcesses: [...runtime.runs.values()].filter(run => run.delivered.length > 0).length, preparing: runtime.preparing, reclaimed: runtime.reclaimed, reused: runtime.reused, completed: runtime.completed, failed: runtime.failed })
+        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, urlImages: !!runtime.options.allowToolBridge, documents: "local-poppler", audio: "local-whisper", video: "local-frames-and-transcript", nativeReasoning: false, nativeBrowser: !!runtime.options.allowNativeBrowser, nativeSubagents: !!runtime.options.allowNativeSubagents, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: false, conversationReuse: runtime.options.reuseConversations !== false ? "live-process" : false, parallelTools: true, tokenCounting: "estimate", openai: ["chat-completions", "responses"], responseStorage: "process-local-30m-bounded", toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory" }, processes: runtime.runs.size, activeProcesses: [...runtime.runs.values()].filter(run => run.active).length, pendingToolProcesses: [...runtime.runs.values()].filter(run => run.delivered.length > 0).length, preparing: runtime.preparing, reclaimed: runtime.reclaimed, reused: runtime.reused, completed: runtime.completed, failed: runtime.failed })
       }
       if (request.method === "GET" && path === "/v1/models") {
         const models = await runtime.availableModels()
         return Response.json({ object: "list", data: models.map(id => ({ id, type: "model", object: "model", display_name: id, owned_by: "antigravity" })), has_more: false, first_id: models[0], last_id: models.at(-1) })
       }
       if (request.method === "POST" && path === "/v1/messages/count_tokens") return Response.json(estimateAgTokens(parseAgRequest(await readBody(request))), { headers: { "x-meridian-token-count": "estimate" } })
-      if (request.method === "POST" && ["/v1/chat/completions", "/v1/responses"].includes(path)) return await agOpenai(request, await readBody(request), path === "/v1/responses", messages)
+      const storedResponse = /^\/v1\/responses\/(resp_agy_[a-f0-9]{32})$/.exec(path)
+      if (storedResponse && ['GET', 'DELETE'].includes(request.method)) {
+        if (new URL(request.url).search) throw new AntigravityError('Stored response query options are not supported')
+        const scope = agResponseScope(request.headers)
+        return Response.json(request.method === 'DELETE' ? responses.delete(storedResponse[1]!, scope) : responses.get(storedResponse[1]!, scope).response, { headers: { 'cache-control': 'no-store' } })
+      }
+      if (request.method === "POST" && ["/v1/chat/completions", "/v1/responses"].includes(path)) return await agOpenai(request, await readBody(request), path === "/v1/responses", messages, responses)
       if (request.method === "POST" && ["/v1/messages", "/messages"].includes(path)) return await messages(request)
       return errorResponse(new AntigravityError("Endpoint unavailable on the Antigravity backend", 404, "not_found_error"))
     } catch (error) { return errorResponse(error) }
@@ -249,6 +257,6 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     beginDrain: () => { runtime.draining = true },
     forceAbortInFlight: () => { for (const run of runtime.runs.values()) run.abort(new Error("Backend shutting down")) },
     getInFlightCount: () => [...runtime.runs.values()].filter(run => run.active).length,
-    closeBackend: () => runtime.close(),
+    closeBackend: async () => { try { await runtime.close() } finally { responses.clear() } },
   }
 }

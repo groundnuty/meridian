@@ -21,6 +21,9 @@ generated paths. `antigravityUrl.ts` validates/pins public HTTPS image downloads
 defines the separately opted-in browser/subagent policy; browser MCP uses isolated
 Chrome. `antigravityProcess.ts` contains platform quoting and process termination.
 `antigravityOpenai.ts` validates supported OpenAI subsets before shared translation;
+`antigravityResponses.ts` holds bounded, credential-scoped, process-local Responses
+input/output snapshots for ID continuation, retrieval and deletion; it does not
+restore native CLI sessions or read their transcripts.
 `antigravityTokens.ts` provides explicitly labeled, side-effect-free estimates. `antigravityStops.ts` is a pure incremental text-stop matcher.
 `antigravitySchema.ts` compiles request-local Ajv validators for client tool
 arguments and native structured results. It never fetches remote references or
