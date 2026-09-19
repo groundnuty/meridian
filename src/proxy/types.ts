@@ -1,7 +1,19 @@
 import type { Server } from "node:http"
 import type { ProfileConfig } from "./profiles"
 
+export interface AntigravityOptions {
+  executable?: string
+  /** Explicit consent to the experimental auto-approval + deny-hook tool bridge. */
+  allowToolBridge?: boolean
+  maxConcurrent?: number
+  turnTimeoutMs?: number
+  pendingToolTimeoutMs?: number
+}
+
 export interface ProxyConfig {
+  /** Defaults to Claude. Antigravity is an opt-in, subscription-account CLI backend. */
+  backend?: "claude" | "antigravity"
+  antigravity?: AntigravityOptions
   port: number
   host: string
   debug: boolean
@@ -35,6 +47,23 @@ export interface ProxyConfig {
   maxConcurrent?: number
 }
 
+/** Read backend selection at instance creation, rather than module import. */
+export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig {
+  const backend = config.backend ?? process.env.MERIDIAN_BACKEND ?? "claude"
+  if (backend !== "claude" && backend !== "antigravity") throw new Error("MERIDIAN_BACKEND must be claude or antigravity")
+  return {
+    ...DEFAULT_PROXY_CONFIG, ...config, backend,
+    ...(backend === "antigravity" ? { antigravity: {
+      executable: process.env.MERIDIAN_AGY_PATH,
+      allowToolBridge: process.env.MERIDIAN_AGY_ALLOW_TOOL_BRIDGE === "1",
+      maxConcurrent: process.env.MERIDIAN_AGY_MAX_CONCURRENT === undefined ? undefined : Number(process.env.MERIDIAN_AGY_MAX_CONCURRENT),
+      turnTimeoutMs: process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS),
+      pendingToolTimeoutMs: process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS),
+      ...config.antigravity,
+    } } : {}),
+  }
+}
+
 export interface ProxyInstance {
   /** The underlying http.Server */
   server: Server
@@ -52,6 +81,8 @@ export interface ProxyServer {
   config: ProxyConfig
   /** Load plugins from disk and wire them into the request pipeline */
   initPlugins?(): Promise<void>
+  /** Release optional backend resources when embedding app.fetch directly. */
+  closeBackend?(): Promise<void>
   /**
    * Stop admitting new `/v1/messages` requests (fast-fails with 503) and
    * report `/health` as `draining`. Used by `startProxyServer`'s `close()`

@@ -42,6 +42,9 @@ Options:
 Environment variables:
   MERIDIAN_PORT                     Port to listen on (default: 3456)
   MERIDIAN_HOST                     Host to bind to (default: 127.0.0.1)
+  MERIDIAN_BACKEND                  claude (default) or antigravity (experimental)
+  MERIDIAN_AGY_PATH                 Official agy executable (default: agy)
+  MERIDIAN_AGY_ALLOW_TOOL_BRIDGE     Opt into Antigravity client-owned tools (1)
   MERIDIAN_PASSTHROUGH              Enable passthrough mode (tools forwarded to client)
   MERIDIAN_IDLE_TIMEOUT_SECONDS     Idle timeout in seconds (default: 120)
   MERIDIAN_PLUGIN_DIR               Plugin auto-discovery directory (default: ~/.config/meridian/plugins)
@@ -264,41 +267,43 @@ export async function runCli(
     return execFile(claudePath, ["auth", "status"], { timeout: 5000 })
   }
 ) {
-  // Plugin check — warn if OpenCode config exists but meridian plugin is missing
-  try {
-    const { findOpencodeConfigPath, checkPluginConfigured, findPluginPath } = await import("../src/proxy/setup")
-    const configPath = findOpencodeConfigPath()
-    const { existsSync } = await import("fs")
-    if (existsSync(configPath) && !checkPluginConfigured(configPath)) {
-      const pluginPath = findPluginPath(import.meta.url)
-      console.error("\x1b[33m⚠ Meridian plugin not found in OpenCode config.\x1b[0m")
-      console.error("  Session tracking and subagent model selection won\'t work.")
-      console.error(`  Fix: meridian setup`)
-      console.error("")
-    }
-  } catch { /* non-fatal */ }
+  if (process.env.MERIDIAN_BACKEND !== "antigravity") {
+    // Plugin check — warn if OpenCode config exists but meridian plugin is missing
+    try {
+      const { findOpencodeConfigPath, checkPluginConfigured, findPluginPath } = await import("../src/proxy/setup")
+      const configPath = findOpencodeConfigPath()
+      const { existsSync } = await import("fs")
+      if (existsSync(configPath) && !checkPluginConfigured(configPath)) {
+        const pluginPath = findPluginPath(import.meta.url)
+        console.error("\x1b[33m⚠ Meridian plugin not found in OpenCode config.\x1b[0m")
+        console.error("  Session tracking and subagent model selection won\'t work.")
+        console.error(`  Fix: meridian setup`)
+        console.error("")
+      }
+    } catch { /* non-fatal */ }
 
-  // Pre-flight auth check — runs the resolved Claude binary's auth-status
-  // subcommand. Independent of whether `claude` is on PATH (#478).
-  try {
-    const { stdout } = await runAuthCheck()
-    const auth = JSON.parse(stdout)
-    if (!auth.loggedIn) {
-      console.error("\x1b[31m✗ Not logged in to Claude.\x1b[0m Run: claude login")
-      process.exit(1)
+    // Pre-flight auth check — runs the resolved Claude binary's auth-status
+    // subcommand. Independent of whether `claude` is on PATH (#478).
+    try {
+      const { stdout } = await runAuthCheck()
+      const auth = JSON.parse(stdout)
+      if (!auth.loggedIn) {
+        console.error("\x1b[31m✗ Not logged in to Claude.\x1b[0m Run: claude login")
+        process.exit(1)
+      }
+      if (auth.subscriptionType !== "max") {
+        console.error(`\x1b[33m⚠ Claude subscription: ${auth.subscriptionType || "unknown"} (Max recommended)\x1b[0m`)
+      }
+    } catch {
+      console.error("\x1b[33m⚠ Could not verify Claude auth status. If requests fail, run: claude login\x1b[0m")
     }
-    if (auth.subscriptionType !== "max") {
-      console.error(`\x1b[33m⚠ Claude subscription: ${auth.subscriptionType || "unknown"} (Max recommended)\x1b[0m`)
-    }
-  } catch {
-    console.error("\x1b[33m⚠ Could not verify Claude auth status. If requests fail, run: claude login\x1b[0m")
-  }
 
-  // Enable disk auto-discovery when no MERIDIAN_PROFILES env var is set.
-  // This lets `meridian profile add` work without restarting the server.
-  if (!profiles) {
-    const { enableDiskProfileDiscovery } = await import("../src/proxy/profiles")
-    enableDiskProfileDiscovery()
+    // Enable disk auto-discovery when no MERIDIAN_PROFILES env var is set.
+    // This lets `meridian profile add` work without restarting the server.
+    if (!profiles) {
+      const { enableDiskProfileDiscovery } = await import("../src/proxy/profiles")
+      enableDiskProfileDiscovery()
+    }
   }
 
   const proxy = await start({ port, host, idleTimeoutSeconds, pluginDir, pluginConfigPath, profiles, defaultProfile, version, installProcessErrorHandlers: true })

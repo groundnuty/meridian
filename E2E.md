@@ -6,6 +6,43 @@ Live tests against the real proxy + Claude Max SDK. These verify the full reques
 
 > **Droid tests (D1–D10)** additionally require `droid` installed (`droid --version` ≥ 0.89.0) and a Factory AI account for BYOK configuration. Tests D1–D10 cover internal mode (the default). Passthrough mode for Droid is opt-in via `MERIDIAN_PASSTHROUGH=1` and requires `droid` ≥ 0.109 — see "Droid passthrough mode" below.
 
+## Antigravity subscription CLI backend
+
+```sh
+npm run build
+node scripts/e2e-antigravity.mjs
+```
+
+Requires an account-authenticated official `agy` CLI, Node 22+, and Pi. This
+opt-in gate consumes account quota. `E2E_AGY_MODEL` selects an actual account
+model slug; `MERIDIAN_AGY_PATH` and `E2E_PI_BIN` select installed binaries.
+It never uses a Gemini API key or the Python SDK.
+
+The built Node server runs on an ephemeral loopback port with the experimental
+Antigravity tool bridge explicitly enabled. The gate checks live text, a random
+HTTP client tool receipt, completed-history replay, then actual Pi streaming
+read/write tool rounds. Pi configuration, context discovery and files are
+isolated. The real CLI retains its existing account authentication. A recording
+relay requires the secret file value to enter through Pi's own `tool_result`;
+the copied file must exactly match the source, and the final answer must contain
+the receipt. CLI versions before and after the gate must match.
+
+The bridge currently uses per-process auto-approval plus a restrictive hook;
+see [the permission and capability limits](docs/antigravity.md). The Node
+entrypoint and macOS flow are the live target. Mocked CLI integration tests do
+not establish Linux or Windows compatibility, arbitrary clients, native resume,
+images or recovery of a pending call after process death.
+
+The gate writes a versioned report and client logs to a temporary artifact
+directory, printed at startup, and closes the public server, MCP listener and
+owned subprocesses. The CLI's own account conversation/project records persist.
+
+**Verified 2026-09-18:** macOS arm64, Node 22.22.3, official `agy` 1.2.7,
+`gemini-3.8-flash-low`, Pi 0.72.1. All four live checks passed. Pi made three
+HTTP requests for the read/write loop, copied the random client-only file
+exactly, and returned its value. The CLI version was unchanged across the run;
+server and subprocess shutdown completed successfully.
+
 ## Quick Start
 
 ```bash

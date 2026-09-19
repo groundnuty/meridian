@@ -135,6 +135,7 @@ its corresponding client. [Plugin guide →](docs/plugins.md)
 | [Desktop guide](apps/desktop/README.md) | Setup, service ownership, updates, plugins and platform status |
 | [Agent setup](docs/agents.md) | Client configuration and compatibility notes |
 | [Configuration](docs/configuration.md) | CLI, environment variables, endpoints and API-key protection |
+| [Antigravity (experimental)](docs/antigravity.md) | Subscription-account CLI backend, text and client-owned tools |
 | [Accounts & profiles](docs/profiles.md) | Sign-in, multiple accounts and session routing |
 | [Deployment](docs/deployment.md) | Docker, Nix and headless services |
 | [Plugins](docs/plugins.md) | Official packages and plugin configuration |

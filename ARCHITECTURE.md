@@ -4,6 +4,33 @@ A local proxy that bridges Anthropic- and OpenAI-compatible clients to the Claud
 
 ## Request Flow
 
+### Experimental Antigravity runtime
+
+`backend: "antigravity"` (or `MERIDIAN_BACKEND=antigravity`) selects a separate
+runtime at the public server entrypoint before Claude authentication, sessions,
+plugins or background maintenance start. Claude remains the default. The
+existing `AgentAdapter` describes incoming clients and is not reused as a
+backend selector.
+
+`backends/antigravityProtocol.ts` owns pure validation, history identity and
+prompt rendering. `antigravityRuntime.ts` owns the official CLI subprocesses and
+loopback MCP transport. `antigravity.ts` adapts the standard Request/Response
+interface to Anthropic JSON/SSE. Only `server.ts` imports Hono and binds the
+public listener. Backend modules do not import Claude session or cache modules.
+
+The runtime maps contain only live requests and outstanding tool correlations,
+like `sessionTree.ts`; they are not another durable session cache. Tool calls
+remain pending inside the official CLI until their client result arrives.
+Completed requests have no cached mapping; the next turn replays client
+history. Native Claude transcript lifecycle and lineage persistence cannot be
+applied to Antigravity. `ProxyInstance.close()` joins owned subprocesses;
+direct fetch embedders use `closeBackend()`.
+
+See [the backend guide](docs/antigravity.md) for the explicit permission opt-in,
+capability errors and recovery limits. Contract work is tracked in #1073.
+
+### Default Claude runtime
+
 ```
 Agent (OpenCode) ──► HTTP POST /v1/messages ──► Proxy Server
                                                     │

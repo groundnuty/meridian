@@ -16,7 +16,8 @@ import { closeServerWithGracePeriod, trackServerConnections } from "./shutdown"
 import { fetchOAuthUsage, fetchOAuthUsageResult, toUsageEntry } from "./oauthUsage"
 import { resolveSdkWorkingDirectory } from "./cwd"
 import type { Context } from "hono"
-import { DEFAULT_PROXY_CONFIG } from "./types"
+import { DEFAULT_PROXY_CONFIG, resolveBackendConfig } from "./types"
+import { createAntigravityServer } from "./backends/antigravity"
 import { env, envBool, envInt } from "../env"
 import type { ProxyConfig, ProxyInstance, ProxyServer } from "./types"
 export type { ProxyConfig, ProxyInstance, ProxyServer }
@@ -589,6 +590,7 @@ type PriorityDispatchOptions = {
 }
 
 export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServer {
+  if (resolveBackendConfig(config).backend === "antigravity") return createAntigravityServer(resolveBackendConfig(config))
   const finalConfig = { ...DEFAULT_PROXY_CONFIG, ...config }
   proxyLogSilent = finalConfig.silent
   const serverVersion = finalConfig.version ?? "unknown"
@@ -8517,6 +8519,30 @@ export function installProxyProcessErrorHandlers(): void {
 }
 
 export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promise<ProxyInstance> {
+  const selectedConfig = resolveBackendConfig(config)
+  if (selectedConfig.backend === "antigravity") {
+    const backend = createAntigravityServer(selectedConfig)
+    await backend.initPlugins?.()
+    if (selectedConfig.installProcessErrorHandlers) installProxyProcessErrorHandlers()
+    const server = serve({ fetch: backend.app.fetch, port: selectedConfig.port, hostname: selectedConfig.host, overrideGlobalObjects: false }, info => {
+      if (!selectedConfig.silent) console.log(`Meridian experimental Antigravity backend: http://${selectedConfig.host}:${info.port}`)
+    }) as Server
+    const tracker = trackServerConnections(server)
+    server.once("error", () => { void backend.closeBackend().catch(error => console.error("[antigravity] Shutdown failed:", error)) })
+    server.keepAliveTimeout = selectedConfig.idleTimeoutSeconds * 1000
+    let closing: Promise<void> | undefined
+    return { server, config: selectedConfig, close() {
+      closing ??= (async () => {
+        backend.beginDrain?.()
+        try { await backend.closeBackend() }
+        finally {
+          try { await closeServerWithGracePeriod(server, { graceMs: 1000, getInFlightCount: () => 0, forceCloseConnections: () => tracker.forceCloseAll() }) }
+          finally { tracker.dispose() }
+        }
+      })()
+      return closing
+    } }
+  }
   // Refuse to bind a port we cannot serve from (#906). Without a boot identity
   // every session-store write throws, so every request that touches a session
   // returns a 500 — a total, non-transient failure. Binding anyway is what let
