@@ -307,6 +307,9 @@ export async function runCli(
     }
   }
 
+  const { enableOrganizationLookup } = await import("../src/proxy/organizationName")
+  enableOrganizationLookup()
+
   const proxy = await start({ port, host, idleTimeoutSeconds, pluginDir, pluginConfigPath, profiles, defaultProfile, version, installProcessErrorHandlers: true })
 
   // Handle EADDRINUSE — preserve CLI behavior of exiting on port conflict

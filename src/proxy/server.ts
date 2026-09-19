@@ -62,7 +62,8 @@ import { telemetryStore, diagnosticLog, createTelemetryRoutes, landingHtml, rend
 import { detectSupervision } from "./supervision"
 import type { RequestMetric } from "../telemetry"
 import { canRecoverCapturedToolUses, canRecoverUncapturedToolUses, isStreamedToolBlockComplete, type StreamedToolBlockRecord, classifyError, extractSdkTermination, formatSdkTermination, classifyResumeRefusal, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError, isAccountFailoverError, isQuotaRefusal, isOutputTokenCapExceeded } from "./errors"
-import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, readStoredCredentialPresence, getAuthRenewalStatus, resolveRenewalWarnDays, type CredentialStore } from "./tokenRefresh"
+import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, readStoredCredentialPresence, getAuthRenewalStatus, getStoredPlanFields, resolveRenewalWarnDays, type CredentialStore, type StoredPlanFields } from "./tokenRefresh"
+import { planAllowance } from "./planAllowance"
 import { isCredentialsReadOnly, logCredentialsModeBanner } from "./credentialsMode"
 import {
   createFileDesignTokenStore,
@@ -97,6 +98,7 @@ import { getAdapterTransforms } from "./transforms/registry"
 import { loadPlugins, getActiveTransforms } from "./plugins/loader"
 import type { LoadedPlugin } from "./plugins/types"
 import { resolveProfile, listProfiles, setActiveProfile, getActiveProfileId, getEffectiveProfiles, restoreActiveProfile, invalidateDiskProfileCache, type ResolvedProfile } from "./profiles"
+import { organizationNames, organizationNeedsRefresh, refreshOrganizationNameSoon } from "./organizationName"
 import {
   getRoutingMode,
   classifyRouteKind,
@@ -7866,10 +7868,23 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // are separate auth contexts keyed by CLAUDE_CONFIG_DIR, so the default
       // store would report an unrelated account's expiry.
       const renewalConfigDir = profileEnvOverrides?.CLAUDE_CONFIG_DIR
-      const renewal = await getAuthRenewalStatus(
-        renewalConfigDir ? createPlatformCredentialStore({ claudeConfigDir: renewalConfigDir }) : undefined,
-        warnDays,
-      ).catch(() => ({ renewalRequiredSoon: false }))
+      const healthStore = renewalConfigDir
+        ? createPlatformCredentialStore({ claudeConfigDir: renewalConfigDir })
+        : undefined
+      const renewal = await getAuthRenewalStatus(healthStore, warnDays)
+        .catch(() => ({ renewalRequiredSoon: false }))
+      // `claude auth status` reports the plan family (`max`) but not the tier
+      // that sizes it, so the 5x-vs-20x distinction can only come off disk.
+      // Same store, same cached read as the renewal window above.
+      const plan = await getStoredPlanFields(healthStore).catch((): StoredPlanFields => ({}))
+      // Spread the live status only WHEN IT HAS ONE. `subscriptionType:
+      // undefined` overwrites the value read off disk, so an account whose
+      // `claude auth status` omits the field lost its stored plan entirely -
+      // which is why a personal Max rendered no Plan row at all.
+      const allowance = planAllowance({
+        ...plan,
+        ...(auth.subscriptionType ? { subscriptionType: auth.subscriptionType } : {}),
+      })
 
       return c.json({
         status: "healthy",
@@ -7880,6 +7895,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           loggedIn: true,
           email: auth.email,
           subscriptionType: auth.subscriptionType,
+          organizationName: organizationNames()[healthProfile.id]?.name ?? null,
+          rateLimitTier: plan.rateLimitTier ?? null,
+          seatTier: plan.seatTier ?? null,
+          allowance: allowance.multiplier,
+          allowanceWeight: allowance.weight,
+          planLabel: allowance.label,
+          accountType: allowance.accountType,
+          planName: allowance.planName,
           ...renewal,
         },
         mode: envBool("PASSTHROUGH") ? "passthrough" : "internal",
@@ -7902,6 +7925,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
   app.get("/profiles/list", async (c) => {
     const profiles = listProfiles(finalConfig.profiles, finalConfig.defaultProfile)
+    const organizations = organizationNames()
     // Enrich with live auth status
     const enriched = await Promise.all(profiles.map(async (p) => {
       const resolved = resolveProfile(finalConfig.profiles, finalConfig.defaultProfile, p.id)
@@ -7911,6 +7935,27 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         envOverrides
       )
       const cacheInfo = getAuthCacheInfo(p.id !== "default" ? p.id : undefined)
+      const organization = organizations[p.id]
+      // Only claude-max profiles have an OAuth account to ask about, and only
+      // their credentials are a directory this can name — an API-key profile
+      // would otherwise be looked up against the host's own ~/.claude and
+      // labelled with an unrelated organization.
+      if (resolved.type === "claude-max" && organizationNeedsRefresh(organization, Date.now())) {
+        refreshOrganizationNameSoon(p.id, { claudeConfigDir: resolved.env.CLAUDE_CONFIG_DIR })
+      }
+      // The tier that sizes the plan is never in `claude auth status` — only
+      // the family (`max`), which covers both 5x and 20x. It is on disk, in
+      // the profile's own credential file.
+      const profileStore = createPlatformCredentialStore(
+        envOverrides?.CLAUDE_CONFIG_DIR
+          ? { claudeConfigDir: envOverrides.CLAUDE_CONFIG_DIR }
+          : undefined,
+      )
+      const plan = await getStoredPlanFields(profileStore).catch((): StoredPlanFields => ({}))
+      const allowance = planAllowance({
+        ...plan,
+        ...(auth?.subscriptionType ? { subscriptionType: auth.subscriptionType } : {}),
+      })
       // `claude auth status` answers from its own view of the account and was
       // measured saying `loggedIn: true` for a credential whose accessToken is
       // the empty string - three accounts on one fleet read as fine here while
@@ -7919,17 +7964,19 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // a request actually presents, so an access token that is not there
       // outranks a cheerful probe. Only `absent` demotes: see
       // `readStoredCredentialPresence` for why `unknown` must not.
-      const presence = await readStoredCredentialPresence(
-        createPlatformCredentialStore(
-          envOverrides?.CLAUDE_CONFIG_DIR
-            ? { claudeConfigDir: envOverrides.CLAUDE_CONFIG_DIR }
-            : undefined,
-        ),
-      )
+      const presence = await readStoredCredentialPresence(profileStore)
       return {
         ...p,
         email: auth?.email || null,
         subscriptionType: auth?.subscriptionType || null,
+        organizationName: organization?.name ?? null,
+        rateLimitTier: plan.rateLimitTier ?? null,
+        seatTier: plan.seatTier ?? null,
+        allowance: allowance.multiplier,
+        allowanceWeight: allowance.weight,
+        planLabel: allowance.label,
+        accountType: allowance.accountType,
+        planName: allowance.planName,
         loggedIn: presence === "absent" ? false : (auth?.loggedIn ?? false),
         lastCheckedAt: cacheInfo.lastCheckedAt || null,
         lastSuccessAt: cacheInfo.lastSuccessAt || null,
