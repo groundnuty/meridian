@@ -89,7 +89,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
   async function messages(request: Request): Promise<Response> {
     if (runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (request.headers.has("x-meridian-profile")) throw new AntigravityError("Antigravity uses the current agy account; Claude profile routing is unavailable")
-    const body = parseAgRequest(await runtime.plugins.request(await readBody(request), request.signal))
+    const body = parseAgRequest(await runtime.plugins.request(await readBody(request), request.signal), runtime.options.adaptThinkingBudgets)
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
     const run = await selectRun(body, request.signal)
     let completed = false
@@ -171,7 +171,12 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         request.signal.removeEventListener("abort", cancel)
       }
     }
-    if (!body.stream) return Response.json(await consume())
+    const adaptationHeaders: Record<string, string> = runtime.options.adaptThinkingBudgets ? {
+      "x-meridian-thinking-budgets": "approximate-effort",
+      "x-meridian-effective-model": body.model,
+      ...(body.output_config?.effort ? { "x-meridian-effective-effort": body.output_config.effort } : {}),
+    } : {}
+    if (!body.stream) return Response.json(await consume(), { headers: adaptationHeaders })
     let cancelled = false
     const encoder = new TextEncoder()
     const stream = new ReadableStream<Uint8Array>({
@@ -199,7 +204,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       },
       cancel() { cancelled = true; cancel() },
     }, { highWaterMark: 1024 * 1024, size: chunk => chunk?.byteLength ?? 0 })
-    return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "x-accel-buffering": "no" } })
+    return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "x-accel-buffering": "no", ...adaptationHeaders } })
   }
 
   async function providerStatus(): Promise<ProviderUsage> {
@@ -239,13 +244,13 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         if (runtime.draining) return Response.json({ status: "draining" }, { status: 503 })
         await runtime.initialize()
         await runtime.verifyAccount()
-        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, urlImages: !!runtime.options.allowToolBridge, documents: "local-poppler", audio: "local-whisper", video: "local-frames-and-transcript", nativeReasoning: false, nativeBrowser: !!runtime.options.allowNativeBrowser, nativeSubagents: !!runtime.options.allowNativeSubagents, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: runtime.nativeSessions && runtime.options.reuseConversations !== false ? "completed-text-and-client-tools" : false, conversationReuse: runtime.options.reuseConversations !== false ? "live-process" : false, parallelTools: true, tokenCounting: "estimate", openai: ["chat-completions", "responses"], responseStorage: runtime.state ? "durable-30m-bounded" : "process-local-30m-bounded", toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory" }, processes: runtime.runs.size, activeProcesses: [...runtime.runs.values()].filter(run => run.active).length, pendingToolProcesses: [...runtime.runs.values()].filter(run => run.delivered.length > 0).length, stateError: runtime.stateError, preparing: runtime.preparing, reclaimed: runtime.reclaimed, reused: runtime.reused, restored: runtime.restored, completed: runtime.completed, failed: runtime.failed })
+        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, urlImages: !!runtime.options.allowToolBridge, documents: "local-poppler", audio: "local-whisper", video: "local-frames-and-transcript", nativeReasoning: false, nativeBrowser: !!runtime.options.allowNativeBrowser, nativeSubagents: !!runtime.options.allowNativeSubagents, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: runtime.nativeSessions && runtime.options.reuseConversations !== false ? "completed-text-and-client-tools" : false, conversationReuse: runtime.options.reuseConversations !== false ? "live-process" : false, parallelTools: true, tokenCounting: "estimate", openai: ["chat-completions", "responses"], responseStorage: runtime.state ? "durable-30m-bounded" : "process-local-30m-bounded", toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory", thinkingBudgets: runtime.options.adaptThinkingBudgets ? "approximate-gemini-effort" : false }, processes: runtime.runs.size, activeProcesses: [...runtime.runs.values()].filter(run => run.active).length, pendingToolProcesses: [...runtime.runs.values()].filter(run => run.delivered.length > 0).length, stateError: runtime.stateError, preparing: runtime.preparing, reclaimed: runtime.reclaimed, reused: runtime.reused, restored: runtime.restored, completed: runtime.completed, failed: runtime.failed })
       }
       if (request.method === "GET" && path === "/v1/models") {
         const models = await runtime.availableModels()
         return Response.json({ object: "list", data: models.map(id => ({ id, type: "model", object: "model", display_name: id, owned_by: "antigravity" })), has_more: false, first_id: models[0], last_id: models.at(-1) })
       }
-      if (request.method === "POST" && path === "/v1/messages/count_tokens") return Response.json(estimateAgTokens(parseAgRequest(await readBody(request))), { headers: { "x-meridian-token-count": "estimate" } })
+      if (request.method === "POST" && path === "/v1/messages/count_tokens") return Response.json(estimateAgTokens(parseAgRequest(await readBody(request), runtime.options.adaptThinkingBudgets)), { headers: { "x-meridian-token-count": "estimate" } })
       if (request.method === "POST" && path === "/v1/responses/input_tokens") return await agOpenai(request, await readBody(request), true, messages, responses, responseJobs, { countTokens: true })
       const storedResponse = /^\/v1\/responses\/(resp_agy_[a-f0-9]{32})(?:\/(input_items|cancel))?$/.exec(path)
       if (storedResponse) {

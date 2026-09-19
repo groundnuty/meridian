@@ -11,6 +11,8 @@ export interface AntigravityOptions {
   pluginPaths?: string[]
   /** Explicit consent to the auto-approval + deny-hook tool bridge. */
   allowToolBridge?: boolean
+  /** Map numeric client thinking budgets to approximate Gemini effort variants. */
+  adaptThinkingBudgets?: boolean
   maxConcurrent?: number
   turnTimeoutMs?: number
   /** Retain matching ordinary conversations in a live official CLI process. */
@@ -73,6 +75,7 @@ export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig 
       statePath: process.env.MERIDIAN_AGY_STATE_PATH || undefined,
       pluginPaths: process.env.MERIDIAN_AGY_PLUGIN_PATHS ? parseAgPluginPaths(process.env.MERIDIAN_AGY_PLUGIN_PATHS) : undefined,
       allowToolBridge: process.env.MERIDIAN_AGY_ALLOW_TOOL_BRIDGE === "1",
+      adaptThinkingBudgets: process.env.MERIDIAN_AGY_ADAPT_THINKING_BUDGETS === "1",
       allowNativeBrowser: process.env.MERIDIAN_AGY_ALLOW_NATIVE_BROWSER === "1",
       browserMcpExecutable: process.env.MERIDIAN_AGY_BROWSER_MCP_PATH,
       allowNativeSubagents: process.env.MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS === "1",

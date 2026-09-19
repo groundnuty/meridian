@@ -43,6 +43,24 @@ describe("Antigravity request contract", () => {
     expect(() => parseAgRequest({ ...initial(), output_config: { effort: "max" } })).toThrow()
     expect(parseAgRequest({ ...initial(), output_config: { format: { type: "json_schema", schema: {} } } }).output_config?.format?.type).toBe("json_schema")
   })
+  it("adapts numeric budgets only by explicit opt-in, without mutating client input", () => {
+    const original = { ...initial(), model: "gemini-fixture-low", thinking: { type: "enabled", budget_tokens: 8192 } }
+    expect(() => parseAgRequest(original)).toThrow("ADAPT_THINKING_BUDGETS")
+    for (const [budget, effort] of [[1, "low"], [2048, "low"], [2049, "medium"], [8192, "medium"], [8193, "high"], [32768, "high"]] as const) {
+      const adapted = parseAgRequest({ ...original, thinking: { type: "enabled", budget_tokens: budget } }, true)
+      expect(adapted.model).toBe(`gemini-fixture-${effort}`)
+      expect(adapted.output_config?.effort).toBe(effort)
+      expect(adapted.thinking).toEqual({ type: "adaptive" })
+    }
+    expect(parseAgRequest({ ...original, thinking: { ...original.thinking, display: "omitted" } }, true).thinking).toEqual({ type: "adaptive", display: "omitted" })
+    expect(original.model).toBe("gemini-fixture-low")
+    expect(original.thinking.budget_tokens).toBe(8192)
+    for (const budget of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) expect(() => parseAgRequest({ ...original, thinking: { type: "enabled", budget_tokens: budget } }, true)).toThrow()
+    expect(() => parseAgRequest({ ...original, model: "claude-sonnet-4-6" }, true)).toThrow("Gemini")
+    expect(() => parseAgRequest({ ...original, output_config: { effort: "high" } }, true)).toThrow("conflicts")
+    expect(parseAgRequest({ ...original, thinking: { type: "disabled" } }, true).model).toBe(original.model)
+    expect(parseAgRequest({ ...original, thinking: { type: "adaptive" } }, true).model).toBe(original.model)
+  })
   it("includes exact client schemas without requiring private CLI metadata reads", () => {
     const prompt = renderAgPrompt(parseAgRequest({ ...initial(), tool_choice: { type: "tool", name: "lookup" } }))
     expect(prompt).toContain(JSON.stringify([tool]))
@@ -512,4 +530,41 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(runtime.runs.size).toBe(0)
   })
 
+})
+
+
+describe("Antigravity thinking-budget client compatibility", () => {
+  it("uses official effort in JSON/SSE and preserves tool continuation", async () => {
+    const { send, runtime } = fixture({ adaptThinkingBudgets: true, reuseConversations: true })
+    const request = { ...initial("EFFORT_PROBE"), model: "gemini-fixture-low", thinking: { type: "enabled", budget_tokens: 16384 } }
+    const first = await send(request)
+    expect(first.status).toBe(200)
+    expect(first.headers.get("x-meridian-thinking-budgets")).toBe("approximate-effort")
+    expect(first.headers.get("x-meridian-effective-model")).toBe("gemini-fixture-high")
+    expect(first.headers.get("x-meridian-effective-effort")).toBe("high")
+    const answer = await decode(first)
+    expect(answer.stop_reason).toBe("tool_use")
+    const call = answer.content.find(block => block.type === "tool_use")!
+    const continuation = await send({ ...request, stream: true, messages: [...request.messages,
+      { role: "assistant", content: answer.content },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "BUDGET_RECEIPT" }] },
+    ] })
+    expect(continuation.status).toBe(200)
+    expect(continuation.headers.get("x-meridian-effective-model")).toBe("gemini-fixture-high")
+    expect(await continuation.text()).toContain("BUDGET_RECEIPT")
+    expect(runtime.requests.every(exchange => exchange.model === "gemini-fixture-high")).toBe(true)
+    expect(runtime.runs.size).toBe(1)
+  })
+  it("does not spawn a model for disabled adaptation or missing account variants", async () => {
+    const request = { ...initial(), model: "gemini-missing-low", thinking: { type: "enabled", budget_tokens: 8192 } }
+    const strict = fixture()
+    expect((await strict.send(request)).status).toBe(400)
+    expect(strict.runtime.runs.size).toBe(0)
+    const enabled = fixture({ adaptThinkingBudgets: true })
+    expect((await enabled.send(request)).status).toBe(400)
+    expect(enabled.runtime.runs.size).toBe(0)
+    const count = await enabled.server.app.fetch(new Request("http://local/v1/messages/count_tokens", { method: "POST", body: JSON.stringify(request) }))
+    expect(count.status).toBe(200)
+    expect(count.headers.get("x-meridian-token-count")).toBe("estimate")
+  })
 })

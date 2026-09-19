@@ -50,6 +50,7 @@ const schema = z.object({
   ]).optional(),
   thinking: z.discriminatedUnion("type", [
     z.object({ type: z.literal("disabled") }),
+    z.object({ type: z.literal("enabled"), budget_tokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), display: z.enum(["summarized", "omitted"]).optional() }).strict(),
     z.object({ type: z.literal("adaptive"), display: z.enum(["summarized", "omitted"]).optional() }),
   ]).optional(),
   output_config: z.object({
@@ -66,10 +67,21 @@ export type AgMessage = z.infer<typeof message>
 export type AgBlock = z.infer<typeof block>
 export type AgCall = z.infer<typeof callBlock>
 export type AgResult = z.infer<typeof resultBlock>
-export function parseAgRequest(value: unknown): AgRequest {
+export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): AgRequest {
   const parsed = schema.safeParse(value)
   if (!parsed.success) throw new AntigravityError("Antigravity supports text, images, documents and adapted media; invalid or unsupported request: " + parsed.error.issues.map(i => i.path.join(".") + " " + i.message).join("; "))
   const request = parsed.data
+  if (request.thinking?.type === "enabled") {
+    if (!adaptThinkingBudgets) throw new AntigravityError("Numeric thinking budgets require MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1; this maps budgets to approximate Gemini effort, not token limits")
+    const family = /^(gemini-[a-zA-Z0-9._-]+)-(low|medium|high)$/.exec(request.model)?.[1]
+    if (!family) throw new AntigravityError("Thinking-budget adaptation requires a Gemini low/medium/high model slug from /v1/models")
+    const budget = request.thinking.budget_tokens
+    const effort = budget <= 2048 ? "low" : budget <= 8192 ? "medium" : "high"
+    if (request.output_config?.effort && request.output_config.effort !== effort) throw new AntigravityError("Explicit effort conflicts with the adapted thinking budget")
+    request.model = `${family}-${effort}`
+    request.thinking = { type: "adaptive", ...(request.thinking.display ? { display: request.thinking.display } : {}) }
+    request.output_config = { ...request.output_config, effort }
+  }
   if (request.output_format) {
     if (request.output_config?.format) throw new AntigravityError("Use only one of output_format and output_config.format")
     request.output_config = { ...request.output_config, format: request.output_format }

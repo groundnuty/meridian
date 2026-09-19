@@ -13,8 +13,10 @@ existing `AgentAdapter` describes incoming clients and is not reused as a
 backend selector.
 
 `backends/antigravityProtocol.ts` owns pure validation, history identity and
-prompt rendering. `antigravityRuntime.ts` owns the official CLI subprocesses and
-loopback MCP transport. `antigravityAttachments.ts` materializes supplied images,
+prompt rendering. Its opt-in numeric thinking-budget normalization maps to Gemini
+effort variants before continuation identity is calculated; runtime model discovery
+checks availability, and responses expose the effective model.
+`antigravityRuntime.ts` owns the official CLI subprocesses and loopback MCP transport. `antigravityAttachments.ts` materializes supplied images,
 documents and adapted media in a disposable workspace; the hook permits exact
 generated paths. `antigravityUrl.ts` validates/pins public HTTPS image downloads;
 `antigravityMedia.ts` owns local ffmpeg/Whisper adaptation. `antigravityNative.ts`
@@ -60,11 +62,14 @@ the process; they are separate from native token-budget controls.
 Completed ordinary requests retain an idle live process. Exact matching history
 and contract append only new user messages through official stream stdin. Schema
 and stop paths remain one-shot. Changed histories, compaction and expired/restarted
-processes replay full client history; no durable CLI transcript mapping is added. A complete tool-call/result request without a live owner also replays,
+processes replay full client history unless an eligible completed/joined mapping
+is restored through the public CLI conversation flag. A complete tool-call/result
+request without a live owner also replays,
 allowing recovery after expiry or process restart without an extra user message.
 A bounded set of consumed tool IDs rejects recent duplicate results; a transient
-claim prevents simultaneous recovery during preflight. Neither is a durable
-session cache or exactly-once ledger. Admission may reclaim a process waiting
+claim prevents simultaneous recovery during preflight. Consumed ID digests can
+persist in the optional Meridian state store; neither mechanism promises
+exactly-once external tool execution. Admission may reclaim a process waiting
 idle for a tool result or another user turn, joining it before replacement; active responses are never
 evicted. A late completed result can use the same replay path. Native Claude transcript lifecycle and lineage persistence cannot be
 applied to Antigravity. `ProxyInstance.close()` joins owned subprocesses;
@@ -76,8 +81,9 @@ The `/providers` page and `/providers/status` report both without mixing account
 identities or quota percentages. `providerStatus.ts` normalizes provider facts;
 `telemetry/providerView.ts` is shared pure presentation for the web and desktop.
 CLI quota reads are single-flight and cached, preserving stale readings on
-failure. Only process-local activity counters and bounded request metadata are
-kept by the Antigravity runtime; Claude session-cache ownership is unchanged.
+failure. Bounded request metadata and native activity optionally persist in Meridian
+state; runtime counters are rebuilt from retained exchanges. Claude session-cache
+ownership is unchanged.
 
 See [the backend guide](docs/antigravity.md) for the explicit permission opt-in,
 capability errors and recovery limits. Contract work is tracked in #1073.

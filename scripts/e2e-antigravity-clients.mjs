@@ -11,6 +11,7 @@ import { once } from 'node:events'
 import { verifyPiSession } from './lib-antigravity-pi-rpc.mjs'
 import { startProxyServer } from '../dist/server.js'
 
+const adaptThinkingBudgets = process.env.E2E_AGY_THINKING_BUDGETS === '1'
 const client = process.env.E2E_CLIENT || 'pi'
 assert(['pi', 'opencode'].includes(client))
 const root = await mkdtemp(join(tmpdir(), `meridian-agy-${client}-`))
@@ -27,9 +28,9 @@ const version = binary => {
 const pi = client === 'pi' ? process.env.E2E_PI_BIN || 'pi' : process.env.E2E_OPENCODE_BIN || 'opencode'
 const report = { model, cli: version(executable), client, clientVersion: version(pi), platform: process.platform, node: process.version, passed: [] }
 let proxy, relay
-const observed = []
+const observed = [], adaptations = []
 try {
-  proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true } })
+  proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true, adaptThinkingBudgets } })
   if (!proxy.server.listening) await once(proxy.server, 'listening')
   const address = proxy.server.address()
   assert(address && typeof address !== 'string')
@@ -47,7 +48,7 @@ try {
       if (process.env.E2E_AGY_RECOVERY === '1' && !restarted && Array.isArray(returned) && returned.some(block => block.type === 'tool_result' && !block.is_error)) {
         restarted = true
         await proxy.close()
-        proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true } })
+        proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true, adaptThinkingBudgets } })
         if (!proxy.server.listening) await once(proxy.server, 'listening')
         const replacement = proxy.server.address()
         assert(replacement && typeof replacement !== 'string')
@@ -59,6 +60,7 @@ try {
       await writeFile(join(root, 'requests.json'), JSON.stringify(observed, null, 2))
       const response = await fetch(url + req.url, { method: req.method, headers: { 'content-type': 'application/json' }, body: raw || undefined, signal: abort.signal })
       if (response.status >= 400) console.log('HTTP', response.status, await response.clone().text())
+      if (body?.thinking?.type === 'enabled' && response.ok) adaptations.push({ budget: body.thinking.budget_tokens, model: response.headers.get('x-meridian-effective-model'), effort: response.headers.get('x-meridian-effective-effort'), mode: response.headers.get('x-meridian-thinking-budgets') })
       res.writeHead(response.status, { 'content-type': response.headers.get('content-type') })
       Readable.fromWeb(response.body).on('error', error => res.destroy(error)).pipe(res)
     } catch (error) {
@@ -69,7 +71,7 @@ try {
   await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve))
   const relayAddress = relay.address()
   assert(relayAddress && typeof relayAddress !== 'string')
-  await writeFile(join(config, 'models.json'), JSON.stringify({ providers: { 'meridian-agy': { baseUrl: `http://127.0.0.1:${relayAddress.port}`, apiKey: 'local-fixture', api: 'anthropic-messages', models: [{ id: model, name: model, reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }))
+  await writeFile(join(config, 'models.json'), JSON.stringify({ providers: { 'meridian-agy': { baseUrl: `http://127.0.0.1:${relayAddress.port}`, apiKey: 'local-fixture', api: 'anthropic-messages', models: [{ id: model, name: model, reasoning: adaptThinkingBudgets, input: ['text'], contextWindow: 128000, maxTokens: adaptThinkingBudgets ? 32768 : 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }))
   await writeFile(join(config, 'settings.json'), JSON.stringify({ compaction: { enabled: false, reserveTokens: 2048, keepRecentTokens: 512 }, retry: { enabled: false } }))
   const receipt = `工具_🧪_${randomUUID()}`
   const sourcePath = join(project, 'café-🧪.cjs'), missingPath = join(project, 'missing.cjs'), outputPath = join(project, 'résultat-你好.txt')
@@ -78,7 +80,7 @@ try {
   const prompt = `Complete this coding task using only your client's read, edit, bash and write tools. First try reading ${missingPath}. That file deliberately does not exist: recover from the read error by reading ${sourcePath}. Edit that actual file with your edit tool, changing only "const count = 2;" to "const count = 3;". Use bash to execute the edited file with node. Write the exact stdout, including its trailing newline, to ${outputPath} with your write tool. Then use bash with a Node assertion to compare the output file byte-for-byte against executing the source; if verification fails, correct it with write and verify again. A newline is a real newline, not literal backslash-n. Finally report the program output. Do not create the missing file, guess the receipt, or use built-in Antigravity tools.`
   const env = { ...process.env, PI_CODING_AGENT_DIR: config, PI_OFFLINE: '1', PI_TELEMETRY: '0' }
   for (const key of Object.keys(env)) if (/^(ANTHROPIC_|CLAUDE_|GEMINI_API_KEY|GOOGLE_API_KEY)/.test(key)) delete env[key]
-  let args = ['--provider', 'meridian-agy', '--model', model, '--thinking', 'off', '--tools', 'read,edit,bash,write,grep,find,ls', '--session', join(root, 'pi-session.jsonl'), '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-themes', '--system-prompt', 'Complete the coding task using the client tools. Treat expected tool errors as recoverable. Preserve Unicode and exact file content.', '-p', prompt]
+  let args = ['--provider', 'meridian-agy', '--model', model, '--thinking', adaptThinkingBudgets ? 'medium' : 'off', '--tools', 'read,edit,bash,write,grep,find,ls', '--session', join(root, 'pi-session.jsonl'), '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-themes', '--system-prompt', 'Complete the coding task using the client tools. Treat expected tool errors as recoverable. Preserve Unicode and exact file content.', '-p', prompt]
   if (client === 'opencode') {
     for (const key of Object.keys(env)) if (/^(OPENCODE_|MERIDIAN_|CLAUDE_PROXY_)/.test(key)) delete env[key]
     for (const kind of ['CONFIG', 'DATA', 'CACHE', 'STATE']) env[`XDG_${kind}_HOME`] = join(root, kind.toLowerCase())
@@ -86,7 +88,7 @@ try {
     await mkdir(env.HOME)
     env.OPENCODE_CONFIG_DIR = config
     env.OPENCODE_DISABLE_AUTOUPDATE = '1'
-    const settings = { $schema: 'https://opencode.ai/config.json', model: `meridian-agy/${model}`, small_model: `meridian-agy/${model}`, enabled_providers: ['meridian-agy'], share: 'disabled', permission: 'allow', provider: { 'meridian-agy': { npm: '@ai-sdk/anthropic', name: 'Antigravity through Meridian', options: { baseURL: `http://127.0.0.1:${relayAddress.port}/v1`, apiKey: 'local-fixture' }, models: { [model]: { name: model, limit: { context: 128000, output: 4096 }, modalities: { input: ['text'], output: ['text'] }, temperature: false, reasoning: false, tool_call: true } } } } }
+    const settings = { $schema: 'https://opencode.ai/config.json', model: `meridian-agy/${model}`, small_model: `meridian-agy/${model}`, enabled_providers: ['meridian-agy'], share: 'disabled', permission: 'allow', provider: { 'meridian-agy': { npm: '@ai-sdk/anthropic', name: 'Antigravity through Meridian', options: { baseURL: `http://127.0.0.1:${relayAddress.port}/v1`, apiKey: 'local-fixture' }, models: { [model]: { name: model, limit: { context: 128000, output: 4096 }, modalities: { input: ['text'], output: ['text'] }, temperature: false, reasoning: adaptThinkingBudgets, ...(adaptThinkingBudgets ? { options: { thinking: { type: 'enabled', budgetTokens: 8192 } }, variants: { high: { thinking: { type: 'enabled', budgetTokens: 16384 } } } } : {}), tool_call: true } } } } }
     if (process.env.E2E_AGY_EFFORT_MODEL) settings.provider['meridian-agy'].models[process.env.E2E_AGY_EFFORT_MODEL] = { ...settings.provider['meridian-agy'].models[model], options: { thinking: { type: 'adaptive' }, effort: 'high' } }
     await writeFile(join(config, 'opencode.json'), JSON.stringify(settings))
     args = ['run', '--pure', '--format', 'json', '--model', `meridian-agy/${model}`, prompt]
@@ -184,6 +186,25 @@ try {
   }
   report.totalRequests = observed.length
   if (client === 'pi') await verifyPiSession({ binary: pi, args, env, project, root, url, report })
+  if (adaptThinkingBudgets) {
+    const highArgs = [...args.slice(0, -1)]
+    if (client === 'pi') highArgs[highArgs.indexOf('--thinking') + 1] = 'high'
+    else highArgs.push('--variant', 'high')
+    const highStart = adaptations.length
+    const high = await run([...highArgs, 'Reply with exactly THINKING_HIGH_READY. Do not use tools.'], 'thinking-high')
+    assert(high.includes('THINKING_HIGH_READY'), high)
+    assert(adaptations.slice(highStart).some(adaptation => adaptation.budget === 16384 && adaptation.effort === 'high'), 'Client high control must select high CLI effort')
+    assert(adaptations.length >= 2, 'Actual client must send numeric budgets across tool continuations')
+    for (const adaptation of adaptations) {
+      assert([8192, 16384].includes(adaptation.budget))
+      const effort = adaptation.budget === 8192 ? 'medium' : 'high'
+      assert.equal(adaptation.model, model.replace(/-(low|medium|high)$/, '-' + effort))
+      assert.equal(adaptation.effort, effort)
+      assert.equal(adaptation.mode, 'approximate-effort')
+    }
+    await writeFile(join(root, 'thinking-adaptations.json'), JSON.stringify(adaptations, null, 2))
+    report.passed.push('actual client numeric thinking budgets mapped to official Gemini medium across tool turns and high on selection')
+  }
   assert.equal(version(executable), report.cli, 'CLI version changed during verification')
   report.totalRequests = observed.length
   console.log(JSON.stringify(report, null, 2))
@@ -192,6 +213,7 @@ try {
   throw error
 } finally {
   await writeFile(join(root, 'requests.json'), JSON.stringify(observed, null, 2))
+  await writeFile(join(root, 'thinking-adaptations.json'), JSON.stringify(adaptations, null, 2))
   await writeFile(join(root, 'report.json'), JSON.stringify(report, null, 2))
   await proxy?.close()
   if (relay) { relay.closeAllConnections(); await new Promise(resolve => relay.close(resolve)) }

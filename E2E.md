@@ -5439,3 +5439,46 @@ Per-entry diagnostics could remove every child, narrowing this to root cleanup
 after recursive directory-creation failure. Workspace initialization now checks
 that an existing root is a real directory before attempting recursive mkdir; the
 same failed-startup cleanup assertion remains enabled.
+
+### Antigravity client thinking-budget adaptation
+
+After building, run the actual-client gates with numeric thinking enabled:
+
+```sh
+E2E_AGY_THINKING_BUDGETS=1 E2E_CLIENT=pi node scripts/e2e-antigravity-clients.mjs
+E2E_AGY_THINKING_BUDGETS=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-clients.mjs
+```
+
+The gates select Gemini 3.8 Flash Low in client configuration, send numeric
+medium budgets, and require the bridge's response headers to report the actual
+Gemini medium variant. They retain the coding, client-tool, saved-session and
+fork checks; Pi additionally exercises steering, compaction and cancellation.
+A final Pi thinking-level / OpenCode variant selection must request 16384 and
+select the official high variant. `thinking-adaptations.json` records the
+observed budgets and effective model/effort alongside the existing wire logs.
+No reasoning text or exact upstream budget enforcement is claimed.
+
+Retained failure: `meridian-agy-pi-krbuJG` failed before generation because Pi
+0.72.1 sends `thinking.display: "summarized"` with numeric thinking. Validation
+now accepts the documented display choices while still emitting no fabricated
+reasoning blocks; a direct regression covers display preservation. The captured
+request also showed Pi clamping its 8192 budget to 3072 when configured with
+`maxTokens: 4096`. The opt-in gate and setup instructions now use 32768 for Pi,
+so medium and high selections reach the bridge without that client-side clamp.
+OpenCode's preliminary `meridian-agy-opencode-XB0eBO` gate passed all existing
+client checks plus medium adaptation (16 requests), before adding the explicit
+high-selection check.
+
+**Verified 2026-09-19:** macOS arm64, Node 22.22.3, official agy 1.2.7:
+
+- Pi 0.72.1 `meridian-agy-pi-BfpU2S`: all 12 checks passed, 22 HTTP requests.
+  The live trace contains 8192 → `gemini-3.8-flash-medium` and 16384 →
+  `gemini-3.8-flash-high`, including the client coding loop, exact Unicode,
+  error recovery, saved/forked history, search, steering, compaction and abort.
+- OpenCode 1.18.31 `meridian-agy-opencode-dSbwYd`: all 9 checks passed, 18
+  requests, with the same medium/high mappings, actual coding tools,
+  saved/forked sessions, search and a client-owned `task` subagent.
+
+Both gates use the official CLI's existing subscription authentication, retain
+client tool ownership and close their owned servers/processes. The CLI version
+was unchanged. These are macOS client results, not Windows/Linux acceptance.

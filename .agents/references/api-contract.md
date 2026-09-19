@@ -26,3 +26,9 @@ backend options. These are provider-specific and do not change Claude plugin
 contracts. Persistence is opt-in and bounded; background jobs are not restart
 resumable. `AntigravityPlugin` request results are revalidated and response/telemetry
 observers cannot mutate saved responses. Owner authorization is tracked in #1073.
+
+`antigravity.adaptThinkingBudgets` (environment
+`MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1`) explicitly enables approximate mapping
+of Anthropic numeric thinking budgets to Gemini effort variants. Response headers
+and health expose adaptation; effective model IDs appear in responses and telemetry.
+Strict rejection remains the default; this does not provide native token limits.

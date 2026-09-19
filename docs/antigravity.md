@@ -161,7 +161,7 @@ allowToolBridge, maxConcurrent, turnTimeoutMs, pendingToolTimeoutMs }` on
 - `POST /v1/messages/count_tokens`: labeled planning estimate without a CLI call.
 - `GET /v1/models`: current account's CLI model slugs.
 - `GET /health`, `/readyz`, `/livez`: backend identity, capability limits and health.
-- Numeric thinking budgets, sampling controls, signed reasoning, Claude-specific
+- Exact numeric thinking budgets, sampling controls, signed reasoning, Claude-specific
   profiles/SDK hooks and signed Claude lineage remain unavailable. Explicit
   Antigravity provider plugins and bounded persistent activity are supported. Unsupported modeled request features fail before execution.
 - `output_config.effort` accepts `low`, `medium`, or `high` only when it matches
@@ -362,6 +362,46 @@ For a matching Gemini high model entry, OpenCode model `options` may specify
 `{"thinking":{"type":"adaptive"},"effort":"high"}`. Do not apply these options
 to low/medium variants or Google-hosted Claude models.
 
+### Client thinking controls through effort adaptation
+
+Set `MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1` on the Meridian service (or
+`antigravity.adaptThinkingBudgets: true` for embedders) to use numeric Anthropic
+client thinking controls with Gemini effort variants. Strict rejection remains
+the default. Generation still goes through the official subscription CLI.
+
+| Client `thinking.budget_tokens` | Effective CLI effort |
+| --- | --- |
+| 1–2048 | low |
+| 2049–8192 | medium |
+| 8193 and above | high |
+
+These thresholds are Meridian's compatibility policy, not Google's token
+allocations. The selected Gemini family stays fixed; for example an 8192 budget
+on `gemini-3.8-flash-low` selects `gemini-3.8-flash-medium` and passes
+`--effort medium`. The target must appear in the signed-in account's `agy models`
+list. A missing variant is rejected without a model call; Meridian never switches
+to a different family or provider. Google-hosted Claude models are not mapped.
+Conflicting explicit effort and numeric budget settings are rejected.
+
+For Pi, change the model entry above to `"reasoning": true` and
+`"maxTokens": 32768`, then use `--thinking low`, `medium`, or `high`. Pi clamps
+its requested thinking budget to leave room for its answer; the larger client
+limit allows its medium/high budgets to reach Meridian intact. This remains an
+advisory output limit for agy. For OpenCode, set `"reasoning": true`
+and configure a model's `options` or a named variant with
+`{"thinking":{"type":"enabled","budgetTokens":8192}}`. Keep `temperature: false`.
+Pi/OpenCode still own tool execution, approvals, skills and client subagents.
+
+JSON and SSE responses expose `x-meridian-thinking-budgets: approximate-effort`,
+`x-meridian-effective-model` and, when selected, `x-meridian-effective-effort`.
+The response model and request telemetry use the effective CLI model. Health
+reports `capabilities.thinkingBudgets: "approximate-gemini-effort"` when enabled.
+Changing effort between completed turns can replay history rather than reuse a
+process; changing it while a tool result is pending is rejected by the existing
+continuation contract. Client thinking `off` leaves the chosen model unchanged;
+it does not disable the model's intrinsic reasoning. Exact quota caps and signed
+reasoning blocks are not implied by enabling the client controls.
+
 The actual-client gates are:
 
 ```sh
@@ -446,7 +486,7 @@ and a multi-megabyte image request through production Node and live CLI vision.
 | Control | Meaning | What is lost through the current CLI |
 | --- | --- | --- |
 | Hard `max_tokens` | Enforce an exact upper bound on generated tokens | The requested limit is advisory. A long answer or tool loop can use more quota and time than that number suggests. Response byte limits and process deadlines remain enforced. |
-| Numeric thinking budget | Allocate a specific number of tokens to internal reasoning | No exact reasoning-token allowance. Supported Gemini low/medium/high variants offer coarser effort selection; disabling a client's budget control does not disable the model's intrinsic reasoning. |
+| Numeric thinking budget | Allocate a specific number of tokens to internal reasoning | Opt-in adaptation maps client budgets to Gemini low/medium/high effort. This enables client controls without promising an exact reasoning-token allowance. |
 | `temperature`, `top_p`, `top_k` | Tune how the model samples its next tokens | No direct randomness/diversity tuning. Prompts can request a style, but do not implement sampling parameters or guarantee repeatability. |
 
 These controls do not determine whether file editing, shell commands, search,

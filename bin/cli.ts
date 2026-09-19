@@ -48,6 +48,7 @@ Environment variables:
   MERIDIAN_AGY_GRAMMAR_PYTHON       Local Python with Lark for custom grammars
   MERIDIAN_AGY_PATH                 Official agy executable (default: agy)
   MERIDIAN_AGY_ALLOW_TOOL_BRIDGE     Opt into Antigravity client-owned tools (1)
+  MERIDIAN_AGY_ADAPT_THINKING_BUDGETS Map numeric budgets to Gemini effort (1)
   MERIDIAN_AGY_ALLOW_NATIVE_BROWSER  Opt into native browser actions (1)
   MERIDIAN_AGY_BROWSER_MCP_PATH    Installed chrome-devtools-mcp 1.9.0 executable
   MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS Opt into native subagents (1)
