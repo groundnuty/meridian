@@ -568,3 +568,63 @@ describe("Antigravity thinking-budget client compatibility", () => {
     expect(count.headers.get("x-meridian-token-count")).toBe("estimate")
   })
 })
+
+
+describe("Antigravity client plugin context changes", () => {
+  for (const change of ["instructions", "catalog"] as const) it(`replays completed results with changed ${change} after joining the old owner`, async () => {
+    const { send, runtime } = fixture({ reuseConversations: true })
+    const request = initial()
+    const first = await decode(await send(request))
+    const old = [...runtime.runs.values()][0]!
+    const id = first.content.find(block => block.type === "tool_use")!.id!
+    const updated = { ...request, ...(change === "instructions" ? { system: "Updated by a client extension" } : { tools: [] }), messages: [...request.messages,
+      { role: "assistant", content: first.content },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "PLUGIN_RECEIPT", is_error: true }] },
+    ] }
+    const response = await send(updated)
+    expect(response.status).toBe(200)
+    expect((await decode(response)).content[0]?.text).toBe("FAILED:PLUGIN_RECEIPT")
+    expect(runtime.runs.has(old.id)).toBe(false)
+    expect(old.child?.exitCode !== null || old.child?.signalCode !== null).toBe(true)
+    expect(runtime.requests.at(0)?.continuation).toBe("client-context-replay")
+    expect(runtime.hasConsumedTool(id)).toBe(true)
+    expect((await send(updated)).status).toBe(409)
+  })
+  it("claims a plugin replay before asynchronous teardown and releases the claim on preflight failure", async () => {
+    const { send, runtime } = fixture({ reuseConversations: true })
+    const request = initial()
+    const first = await decode(await send(request))
+    const id = first.content.find(block => block.type === "tool_use")!.id!
+    const updated = { ...request, system: "New context", messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "ONCE" }] }] }
+    const original = runtime.verifyAccount.bind(runtime)
+    let release!: () => void
+    let entered!: () => void
+    const barrier = new Promise<void>(resolve => { release = resolve })
+    const ready = new Promise<void>(resolve => { entered = resolve })
+    runtime.verifyAccount = async () => { entered(); await barrier; throw new Error("fixture preflight unavailable") }
+    const pending = send(updated)
+    try {
+      await ready
+      expect(runtime.recoveringTools.has(id)).toBe(true)
+      expect((await send(updated)).status).toBe(409)
+    } finally { release() }
+    expect((await pending).status).toBe(503)
+    expect(runtime.recoveringTools.has(id)).toBe(false)
+    expect(runtime.hasConsumedTool(id)).toBe(false)
+    runtime.verifyAccount = original
+    expect((await decode(await send(updated))).content[0]?.text).toBe("ONCE")
+    expect((await send(updated)).status).toBe(409)
+  })
+  it("does not relax pending model or history identity when a plugin changes context", async () => {
+    const { send, runtime } = fixture()
+    const request = initial()
+    const first = await decode(await send(request))
+    const updated = { ...request, system: "New context", messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: first.content[0]!.id, content: "receipt" }] }] }
+    expect((await send({ ...updated, model: "fixture-model-high" })).status).toBe(409)
+    expect((await send({ ...updated, max_tokens: 200 })).status).toBe(409)
+    expect((await send({ ...updated, meridian_session_key: "other-session" })).status).toBe(409)
+    expect((await send({ ...updated, messages: [{ role: "user", content: "Edited history" }, ...updated.messages.slice(1)] })).status).toBe(409)
+    expect(runtime.runs.size).toBe(1)
+    expect((await send(updated)).status).toBe(200)
+  })
+})

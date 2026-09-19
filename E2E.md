@@ -5482,3 +5482,69 @@ high-selection check.
 Both gates use the official CLI's existing subscription authentication, retain
 client tool ownership and close their owned servers/processes. The CLI version
 was unchanged. These are macOS client results, not Windows/Linux acceptance.
+
+### Antigravity client extensions, approvals and questions
+
+```sh
+npm run build
+E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+The gate loads an actual Pi extension or OpenCode V1 plugin from
+`scripts/fixtures/`, through each client's normal loader. Pi uses its public RPC
+extension-dialog protocol; OpenCode uses its authenticated local server API.
+Configuration, fixture files and audit records are disposable. No global client
+plugins or credentials are changed. The fixture receipts exist only in the client
+environment and must return through client `tool_result`; execution counts are
+checked independently. Generation uses the signed-in official agy CLI.
+
+Pi covers confirmation, argument rewriting, denial without execution, selected
+and cancelled questions, dynamically registering a tool for the next user turn,
+and delayed approval after the CLI wait expires. OpenCode covers custom plugin
+tools, before/after hooks, permission approval/rejection, system-context changes
+between tool calls, answered/dismissed questions and delayed approval. The gate
+uses a five-second pending-tool timeout and waits longer before the delayed
+approval; the production default is unchanged. Both gates reject any recorded
+HTTP error, even if a client eventually recovers through retries. OpenCode also
+requires `client-context-replay` telemetry for its changed-context continuation.
+
+Retained findings and corrections:
+
+- `meridian-agy-pi-extensions-a1KQDd`: the initial harness selected `--no-tools`,
+  which also disables extension tools. The corrected gate uses the installed
+  Pi's `--no-builtin-tools` option.
+- `meridian-agy-pi-extensions-7FsCmS`: approvals, denial and questions passed.
+  A tool registered during execution was absent from the next request's catalog;
+  the native deny hook correctly refused its use. The final gate verifies
+  availability on the next user turn, when Pi actually advertises the tool.
+- `meridian-agy-opencode-extensions-4EETdW`: the harness waited for another
+  model response after permission rejection. OpenCode intentionally ended the
+  turn with an errored tool. The gate now detects idle state and sends a new user
+  turn to verify the denied result reaches the model.
+- `meridian-agy-opencode-extensions-T4qfkG`: a real plugin's system transform
+  changed instructions after its tool executed. Meridian returned repeated HTTP
+  409 until the old owner expired and ordinary replay recovered. That eventual
+  success did not fix the bug. The bridge now claims completed results, joins
+  the old process and starts a fresh official CLI with the changed context.
+  Direct tests cover changed instructions/catalogs, duplicate races, failed
+  preflight retry and continued rejection of changed model/history/session/budget.
+- `meridian-agy-opencode-extensions-nZLJSq`: the stricter final harness reached
+  question cancellation but expected "rejected" instead of the client's actual
+  structured error, "The user dismissed this question". The corrected assertion
+  checks the errored question tool explicitly, then verifies a subsequent user
+  turn carries cancellation back to the model.
+
+The first post-fix runs `meridian-agy-pi-extensions-L87IRv` and
+`meridian-agy-opencode-extensions-AH93LU` passed six checks each. The final harness
+additionally checks the assistant's final reply rather than matching tokens in
+the originating user prompt. Its Pi run `meridian-agy-pi-extensions-gt1dOg`
+passed all six checks with 14 requests, no HTTP errors, Pi 0.72.1, official agy
+1.2.7, Gemini 3.8 Flash Low, Node 22.22.3 and macOS arm64.
+
+**Final OpenCode verification:** `meridian-agy-opencode-extensions-WuUVSA`
+passed all six checks with 12 requests and no HTTP errors, using OpenCode 1.18.31
+on the same macOS/Node/agy/Gemini versions. Its changed-context request used the
+new replay path directly, without 409 retries or waiting for the old owner to
+expire. The permission and question cancellations were confirmed in structured
+client tool errors and then acknowledged by the model on subsequent user turns.

@@ -56,6 +56,11 @@ inherit the guarded workspace. MCP request identity is scoped per initialized
 session, avoiding collisions between native children. The synthetic parallel MCP
 tool validates a whole batch before delivery; reverse-order results remain correlated. Tool choice
 may change between responses without changing the remaining pending contract.
+Client plugin changes to system instructions or tool definitions use completed-
+history replay after claiming all results and joining the old pending process.
+Model, session, execution controls and delivered history must still match. The
+new process installs its own tool catalog and deny hook; telemetry records
+`client-context-replay`. Failed preflight releases the replay claim for retry.
 Native schema mode permits `finish`, withholds prose and emits only the final
 structured result after clean exit. Text stops deliberately terminate and join
 the process; they are separate from native token-budget controls.

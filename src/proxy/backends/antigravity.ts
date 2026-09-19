@@ -11,7 +11,7 @@ import type { ProxyConfig, ProxyServer } from "../types"
 import { getBuildInfo } from "../buildInfo"
 import { hasValidApiKey } from "../auth"
 import { AntigravityRuntime, type AntigravityRun } from "./antigravityRuntime"
-import { AntigravityError, forcedAgTool, toolChoiceInstruction, blocks, contractKey, historyKey, parseAgRequest, type AgBlock, type AgRequest } from "./antigravityProtocol"
+import { AntigravityError, forcedAgTool, toolChoiceInstruction, blocks, contractKey, historyKey, sameAgExecutionContract, parseAgRequest, type AgBlock, type AgResult, type AgRequest } from "./antigravityProtocol"
 
 function errorResponse(error: unknown): Response {
   const e = error instanceof AntigravityError ? error : new AntigravityError(error instanceof Error ? error.message : String(error), 503, "api_error")
@@ -39,6 +39,26 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
   if (config.profiles?.length || config.defaultProfile) throw new Error("Antigravity does not support Claude profile configuration")
   const responses = new AgResponseStore(undefined, undefined, runtime.state)
   const responseJobs = new AgResponseJobs(responses)
+  async function recoverResults(body: AgRequest, signal: AbortSignal, results: AgResult[], previous?: AntigravityRun): Promise<AntigravityRun> {
+    // Claim before retiring the old owner: simultaneous HTTP retries must not
+    // start competing replays while shutdown or account preflight is pending.
+    for (const result of results) runtime.recoveringTools.add(result.tool_use_id)
+    try {
+      if (previous) {
+        previous.busy = true
+        previous.abort(new AntigravityError("Client plugin context changed; replaying completed tool history", 409), "retired")
+        await previous.settled
+      }
+      if (signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
+      const run = await runtime.create(body, signal)
+      if (previous) run.continuation = "client-context-replay"
+      for (const result of results) runtime.rememberConsumedTool(result.tool_use_id)
+      run.busy = true
+      return run
+    } finally {
+      for (const result of results) runtime.recoveringTools.delete(result.tool_use_id)
+    }
+  }
   async function selectRun(body: AgRequest, signal: AbortSignal): Promise<AntigravityRun> {
     // Clients may append steering as text in the result message or as another
     // user message. Match the delivered assistant prefix before accepting either.
@@ -57,8 +77,14 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       const run = runtime.toolOwners.get(result.tool_use_id)
       if (!run) throw new AntigravityError("Antigravity continuation contains an unknown live tool", 409)
       if (run.busy) throw new AntigravityError("Antigravity turn already has an active response", 409)
-      if (results.length !== run.delivered.length || results.some(result => !run.delivered.some(call => call.id === result.tool_use_id)) || owners.some(owner => owner !== run) || run.contract !== contractKey(body) || historyKey(run.history) !== historyKey(body.messages.slice(0, suffixStart))) {
-        throw new AntigravityError("Pending Antigravity tool continuation changed its history, model, instructions or tools", 409)
+      if (results.length !== run.delivered.length || results.some(result => !run.delivered.some(call => call.id === result.tool_use_id)) || owners.some(owner => owner !== run) || historyKey(run.history) !== historyKey(body.messages.slice(0, suffixStart))) {
+        throw new AntigravityError("Pending Antigravity tool continuation changed its delivered history or tool batch", 409)
+      }
+      if (run.contract !== contractKey(body)) {
+        if (!sameAgExecutionContract(run.request, body)) throw new AntigravityError("Pending Antigravity tool continuation changed its model, session or execution controls", 409)
+        // A fresh official process installs the new MCP catalog and deny hook.
+        // The old pending call never receives a result under a changed context.
+        return recoverResults(body, signal, continuationResults, run)
       }
       const followup = suffix.map(message => ({ ...message, content: blocks(message).filter(b => b.type === "text" || b.type === "image" || b.type === "document" || b.type === "audio" || b.type === "video") })).filter(message => message.content.length > 0)
       if (JSON.stringify(run.request.tool_choice) !== JSON.stringify(body.tool_choice)) {
@@ -75,15 +101,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       }
       return run
     }
-    for (const result of continuationResults) runtime.recoveringTools.add(result.tool_use_id)
-    try {
-      const run = await runtime.create(body, signal)
-      for (const result of continuationResults) runtime.rememberConsumedTool(result.tool_use_id)
-      run.busy = true
-      return run
-    } finally {
-      for (const result of continuationResults) runtime.recoveringTools.delete(result.tool_use_id)
-    }
+    return recoverResults(body, signal, continuationResults)
   }
 
   async function messages(request: Request): Promise<Response> {

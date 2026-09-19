@@ -69,14 +69,18 @@ responsibility.
 ## State and recovery
 
 Pending tool calls retain a live `agy` process. Each continuation must preserve
-the delivered conversation prefix, model, system instructions, tool catalog and
-output budget. The result must correspond to the exact delivered tool ID.
-Changed live continuations and recently consumed duplicate results receive HTTP 409.
+the delivered conversation prefix, model, session identity and execution controls.
+Results must match the entire delivered tool batch. A client plugin may update
+system instructions or tool definitions: Meridian claims the completed results,
+stops and joins the old CLI, then replays the completed history through a fresh
+official CLI with the new context. Telemetry labels this `client-context-replay`.
+The old pending action is never resumed under the changed tool policy. Other
+changed live continuations and recently consumed duplicate results receive HTTP 409.
 Unpaired or malformed historical results receive HTTP 400. New user text
 may accompany the exact result or follow it in another user message. This steering
 continues the same pending process and is delivered separately from tool output. Independent upstream calls are coalesced into one response, preserving every
 correlation. A synthetic `meridian_parallel` MCP tool also submits 2–16 independent
-actions atomically. `disable_parallel_tool_use: true` delivers them serially. A live result remains bound to its original process.
+actions atomically. `disable_parallel_tool_use: true` delivers them serially. Unchanged live continuations remain bound to their original process.
 
 Matching ordinary turns reuse the same live CLI process and send only new user
 messages. This preserves native conversation/cache affinity while that process
@@ -659,6 +663,40 @@ node scripts/e2e-antigravity-native-tools.mjs
 The media fixture also uses macOS `say`; its recorded evidence does not validate
 Linux/Windows preprocessing. See E2E.md for exact successes and retained failures.
 
+
+## Pi/OpenCode extensions, approvals and questions
+
+Use client extensions and plugins in their normal client locations. Their tools
+are advertised through the existing client tool bridge; no additional Meridian
+plugin or backend permission grant is needed. Pi/OpenCode execute the tools,
+show approval dialogs, run their hooks and send results or errors to Meridian.
+A denied client action does not authorize agy to perform the action itself.
+
+The live extension gate covers:
+
+- Pi: a real extension's custom tool, a confirmation dialog, argument rewriting,
+  denial without execution, selected/cancelled questions, and a tool registered
+  dynamically and used on the next user turn.
+- OpenCode: a real V1 plugin's custom tools, permission approval/rejection,
+  before/after hooks, system-context updates between tool calls, and the built-in
+  question tool with both answered and rejected questions. OpenCode can end the
+  current turn on permission rejection; a subsequent user turn conveys that
+  rejected result back to the model.
+- Both clients: approval after the CLI's configured tool wait expires. Complete
+  client history recovers the result without executing the approved tool twice.
+
+```sh
+E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+The gate runs actual installed clients and the signed-in official agy CLI,
+consumes subscription quota, and uses disposable client configuration. It checks
+execution counts, private receipts carried in client tool results, and HTTP
+errors, so successful client retries cannot conceal bridge failures. It uses a
+five-second CLI tool wait to exercise delayed approval efficiently; production's
+default remains sixty seconds. This verifies the listed client mechanisms,
+not arbitrary third-party plugin code or TUI-only extension rendering.
 
 ## Antigravity extensions and custom grammars
 

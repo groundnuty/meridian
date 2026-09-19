@@ -132,6 +132,10 @@ export function historyKey(messages: AgMessage[]): string {
 export function contractKey(request: AgRequest): string {
   return stable({ session: request.meridian_session_key, grammars: request.meridian_tool_grammars, model: request.model, system: request.system, tools: request.tools, max_tokens: request.max_tokens, thinking: request.thinking, stop_sequences: request.stop_sequences, output_config: request.output_config })
 }
+/** Client plugins may refresh instructions/tool definitions, but cannot retarget a pending execution. */
+export function sameAgExecutionContract(previous: AgRequest, next: AgRequest): boolean {
+  return contractKey({ ...previous, system: next.system, tools: next.tools }) === contractKey(next)
+}
 export function hasAgImages(messages: AgMessage[]): boolean {
   return messages.some(m => blocks(m).some(b => (b.type === "image" || b.type === "document" || b.type === "audio" || b.type === "video") || (b.type === "tool_result" && Array.isArray(b.content) && b.content.some(c => c.type === "image" || c.type === "document" || c.type === "audio" || c.type === "video"))))
 }
