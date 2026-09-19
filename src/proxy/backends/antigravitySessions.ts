@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, readdirSync, rmSync, statSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, lstatSync, realpathSync, readdirSync, rmSync, statSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
@@ -14,7 +14,15 @@ export class AgNativeSessions {
   private readonly active = new Set<string>()
   constructor(private readonly state: AgState, path: string, private readonly options: AntigravityOptions) {
     this.directory = resolve(dirname(path), 'antigravity-workspaces-' + createHash('sha256').update(resolve(path)).digest('hex').slice(0, 12))
-    mkdirSync(this.directory, { recursive: true, mode: 0o700 })
+    // Validate existing workspace roots before recursive mkdir. In particular,
+    // do not pass a regular file through the Windows mkdir failure path.
+    try {
+      const existing = lstatSync(this.directory)
+      if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error('Antigravity workspace root must be a real directory')
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+      mkdirSync(this.directory, { recursive: true, mode: 0o700 })
+    }
     this.directory = realpathSync(this.directory)
     this.prune(true)
   }

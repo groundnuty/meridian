@@ -5432,3 +5432,10 @@ showed that native database/statement wrappers can outlive connection close.
 `AgState.close()` now releases its database and guard-closure references as well
 as closing them. Fixture cleanup explicitly yields for finalization and retries
 bounded transient Windows deletion errors; exhaustion still fails the test.
+
+After releasing database wrappers, five Windows cleanup failures passed; only the
+fixture that placed a regular file at the workspace-directory path remained.
+Per-entry diagnostics could remove every child, narrowing this to root cleanup
+after recursive directory-creation failure. Workspace initialization now checks
+that an existing root is a real directory before attempting recursive mkdir; the
+same failed-startup cleanup assertion remains enabled.
