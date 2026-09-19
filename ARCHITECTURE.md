@@ -25,7 +25,8 @@ Chrome. `antigravityProcess.ts` contains platform quoting and process terminatio
 `antigravityOpenai.ts` validates supported OpenAI subsets before shared translation;
 `antigravityOpenaiMedia.ts` preserves original OpenAI attachments while adapting
 them into the common media pipeline. `antigravityResponses.ts` holds bounded,
-credential-scoped Responses snapshots; `antigravityJobs.ts` owns background
+credential-scoped Responses snapshots with one oldest-first count/byte ledger
+across volatile payloads and durable metadata (rebuilt from SQLite on startup); `antigravityJobs.ts` owns background
 cancellation and bounded event replay. Optional `antigravityState.ts` persists
 Meridian-owned records in private SQLite with an exclusive lifetime owner guard.
 `antigravitySessions.ts` atomically claims exact completed/joined text/client-tool

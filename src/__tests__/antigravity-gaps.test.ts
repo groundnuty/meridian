@@ -67,6 +67,79 @@ describe('Antigravity durable state', () => {
     again.close()
     if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600)
   })
+  it('shares entry capacity across completed and pending responses, including after restart', () => {
+    const path = join(root(), 'state.sqlite')
+    const limits = { entries: 2, bytes: 4096, entryBytes: 2048, ttlMs: 60000 }
+    const db = new AgState(path)
+    try {
+      const store = new AgResponseStore(limits, undefined, db)
+      store.put('old', scope, [], response)
+      store.put('new', scope, [], response)
+      store.put('pending', scope, [], { status: 'queued' })
+      expect(() => store.get('old', scope)).toThrow('not found')
+      expect(store.get('new', scope).response).toEqual(response)
+      expect(store.get('pending', scope).response.status).toBe('queued')
+    } finally { db.close() }
+    const reopened = new AgState(path)
+    try {
+      const store = new AgResponseStore(limits, undefined, reopened)
+      expect(() => store.get('old', scope)).toThrow('not found')
+      expect(() => store.get('pending', scope)).toThrow('not found')
+      store.put('pending2', scope, [], { status: 'queued' })
+      store.put('pending3', scope, [], { status: 'queued' })
+      expect(() => store.get('new', scope)).toThrow('not found')
+      expect(reopened.list('responses')).toHaveLength(0)
+      store.put('completed', scope, [], response)
+      expect(() => store.get('pending2', scope)).toThrow('not found')
+      expect(store.get('pending3', scope).response.status).toBe('queued')
+    } finally { reopened.close() }
+  })
+  it('shares serialized byte capacity across volatile and durable responses', () => {
+    const db = new AgState(join(root(), 'state.sqlite'))
+    try {
+      const value = { status: 'completed', text: 'é'.repeat(100) }
+      const bytes = Buffer.byteLength(JSON.stringify({ input: [], response: value }))
+      const store = new AgResponseStore({ entries: 10, bytes: bytes * 2, entryBytes: bytes, ttlMs: 60000 }, undefined, db)
+      store.put('old', scope, [], value)
+      store.put('pending', scope, [], value, undefined, false)
+      store.put('new', scope, [], value)
+      expect(() => store.get('old', scope)).toThrow('not found')
+      expect(db.get('responses', 'old', scope)).toBeUndefined()
+      expect(store.get('pending', scope).response).toEqual(value)
+      expect(store.get('new', scope).response).toEqual(value)
+    } finally { db.close() }
+  })
+  it('replaces durable snapshots with volatile failures without resurrecting success', () => {
+    const path = join(root(), 'state.sqlite'), db = new AgState(path)
+    try {
+      const store = new AgResponseStore(undefined, undefined, db)
+      store.put('job', scope, [], response)
+      store.put('job', scope, [], { status: 'failed' }, undefined, false)
+      expect(store.get('job', scope).response.status).toBe('failed')
+      expect(() => store.get('job', 'other')).toThrow('not found')
+    } finally { db.close() }
+    const reopened = new AgState(path)
+    try { expect(() => new AgResponseStore(undefined, undefined, reopened).get('job', scope)).toThrow('not found') }
+    finally { reopened.close() }
+  })
+  it('releases shared capacity on expiry, replacement and deletion', () => {
+    const db = new AgState(join(root(), 'state.sqlite'))
+    let now = Date.now()
+    try {
+      const store = new AgResponseStore({ entries: 2, bytes: 4096, entryBytes: 2048, ttlMs: 1000 }, () => now, db)
+      store.put('expired', scope, [], response)
+      now += 1001
+      store.put('pending', scope, [], { status: 'queued' })
+      store.put('live', scope, [], response)
+      expect(db.get('responses', 'expired', scope)).toBeUndefined()
+      store.put('pending', scope, [], response)
+      expect(store.get('live', scope).response).toEqual(response)
+      store.delete('pending', scope)
+      store.put('third', scope, [], response)
+      expect(store.get('live', scope).response).toEqual(response)
+      expect(store.get('third', scope).response).toEqual(response)
+    } finally { db.close() }
+  })
   it('bounds persistent records and prunes expiry', () => {
     const db = new AgState(join(root(), 'state.sqlite'))
     db.put('x', 'expired', '', '{}', Date.now() - 1, 2, 100)

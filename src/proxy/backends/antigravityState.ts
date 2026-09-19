@@ -57,6 +57,10 @@ export class AgState {
     this.prune()
     return (this.db.prepare('SELECT json FROM ag_state WHERE kind = ? ORDER BY rowid DESC').all(kind) as Array<{ json: string }>).map(row => row.json)
   }
+  records(kind: string): Array<{ id: string; scope: string; bytes: number; expires: number }> {
+    this.prune()
+    return this.db.prepare('SELECT id, scope, bytes, expires FROM ag_state WHERE kind = ? ORDER BY rowid ASC').all(kind) as Array<{ id: string; scope: string; bytes: number; expires: number }>
+  }
   delete(kind: string, id: string, scope: string) { this.db.prepare('DELETE FROM ag_state WHERE kind = ? AND id = ? AND scope = ?').run(kind, id, scope) }
   close() {
     if (this.closed) return

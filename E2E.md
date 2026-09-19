@@ -5548,3 +5548,26 @@ on the same macOS/Node/agy/Gemini versions. Its changed-context request used the
 new replay path directly, without 409 retries or waiting for the old owner to
 expire. The permission and question cancellations were confirmed in structured
 client tool errors and then acknowledged by the model on subsequent user turns.
+
+### Antigravity shared response-storage budget verification
+
+The response store now shares its entry/serialized-byte budget between volatile
+background snapshots and completed SQLite records. Startup rebuilds an ordered
+metadata ledger without loading persisted response bodies. Direct tests cover
+mixed-store eviction, UTF-8 byte accounting, replacement, expiry, deletion and
+restart; a volatile failure removes an older durable success for the same ID.
+
+Live rerun `meridian-agy-gap-closure-Dg4lXs` passed all nine existing durability,
+native restoration/denial, provider extension, background streaming/cancellation,
+regex/Lark and namespaced tool-result checks using official agy 1.2.7, Gemini
+3.8 Flash Low, Node 22.22.3 and macOS arm64. The HTTP Responses client used
+`scripts/e2e-antigravity-gap-closure.mjs`; the bounded-capacity edge cases are
+covered directly with SQLite and small test limits rather than hundreds of
+subscription model calls.
+
+Retained initial run `meridian-agy-gap-closure-IR9RjM` passed the first six checks
+but stopped with HTTP 400 because the selected Python lacked Lark. The successful
+rerun supplied `MERIDIAN_AGY_GRAMMAR_PYTHON` pointing to an isolated Python
+environment with Lark installed. No application change or relaxed assertion was
+used to resolve that prerequisite. These runs do not classify the previously
+recorded intermittent CLI configuration preflight 503s.

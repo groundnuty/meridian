@@ -571,7 +571,8 @@ for longer sessions and reliable recovery.
 Only input/output items carry forward through a response ID: resend the desired
 `instructions`, tools and controls on each call. Ordinary forks are independent;
 changing instructions or model causes full-history replay. Pending tool results
-still require the matching tool definitions and instruction contract. JSON and
+may refresh instructions and tool definitions through completed-history replay;
+delivered history, model, session and execution controls must still match. JSON and
 streaming responses are stored only on successful completion; failed/cancelled
 foreground streams are not published. Deleting an ancestor does not delete
 already-created descendants. `background: true` requires storage and returns a
