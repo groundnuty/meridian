@@ -84,4 +84,11 @@ async function main() {
   console.log('PASS desktop provider flow')
   app.quit()
 }
-main().catch(async error => { console.error(error); app.once('will-quit', () => app.exit(1)); app.quit() })
+main().catch(async error => {
+  console.error(error)
+  try {
+    const window = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html'))
+    if (window) writeFileSync(join(root, 'state-on-failure.json'), JSON.stringify(await window.webContents.executeJavaScript('window.meridian.state()'), null, 2), { mode: 0o600 })
+  } catch (captureError) { console.error('Could not capture desktop failure state:', String(captureError)) }
+  app.once('will-quit', () => app.exit(1)); app.quit()
+})

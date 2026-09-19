@@ -277,6 +277,24 @@ The merged native macOS app passed all 9 checks in
 combined service, both actual provider routes, exact Pi copy, shared activity,
 separate quotas, provider/request/tray navigation, standalone mode and shutdown.
 
+Further integration included main through `dacc1b1b` (authentication diagnostics
+and profile following). The actual app passed all 9 checks in
+`meridian-agy-desktop-TOWjo8`, with nested Pi flow `meridian-agy-e2e-KQar9e`.
+An earlier run, `meridian-agy-desktop-0EaaSM` / `meridian-agy-e2e-uBAZTT`, failed
+before any model call because `/antigravity/health` returned a body without
+`backend`. That gate did not retain its HTTP status/body, so the cause remains
+unclassified. Three subsequent read-only combined health probes returned 200,
+and the instrumented native gate passed; neither establishes the first failure's
+cause or a production fix. Health status/body and desktop failure state are now
+saved by the gates. Preserve this open diagnostic rather than treating a green
+repeat as proof of resolution.
+
+Linux CI also exposed process-global SDK mock contamination from the newly
+merged `follow-active-integration.test.ts`: unrelated tests received its
+`session-${Date.now()}` identity instead of their own mocked session. `npm test`
+now runs that file in its own process, retaining all of its assertions alongside
+the other isolated groups. This changes test isolation, not runtime SDK behavior.
+
 ## Quick Start
 
 ```bash

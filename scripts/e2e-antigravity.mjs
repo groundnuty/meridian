@@ -25,8 +25,11 @@ const url = externalUrl || `http://127.0.0.1:${address.port}`
 const report = { model, cli: spawnSync(process.env.MERIDIAN_AGY_PATH || "agy", ["--version"], { encoding: "utf8" }).stdout.trim(), platform: process.platform, passed: [] }
 let relay
 try {
-  const health = await (await fetch(url + "/health")).json()
-  assert.equal(health.backend, "antigravity")
+  const healthResponse = await fetch(url + "/health")
+  const health = await healthResponse.json()
+  await writeFile(join(root, "health.json"), JSON.stringify({ status: healthResponse.status, body: health }, null, 2))
+  assert.equal(healthResponse.status, 200, JSON.stringify(health))
+  assert.equal(health.backend, "antigravity", JSON.stringify(health))
   assert.equal(health.auth.provider, "agy-account")
   const send = async body => {
     const response = await fetch(url + "/v1/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, max_tokens: 1024, ...body }), signal: AbortSignal.timeout(90000) })
