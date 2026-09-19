@@ -1,4 +1,3 @@
-import { z } from "zod"
 import type { ProviderUsage, ProviderSnapshot } from '../../telemetry/providerView'
 
 const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
@@ -22,12 +21,7 @@ export function disabledProvider(id: 'claude' | 'antigravity'): ProviderUsage {
   return { id, name: id === 'claude' ? 'Claude' : 'Antigravity', enabled: false, status: 'disabled', endpoint: id === 'claude' ? '/v1/messages' : '/antigravity/v1/messages', accounts: [] }
 }
 
-const snapshotSchema = z.object({ fetchedAt: z.number().finite(), providers: z.array(z.object({
-  id: z.enum(['claude', 'antigravity']), name: z.string(), enabled: z.boolean(), status: z.string(), endpoint: z.string(), error: z.string().optional(), models: z.array(z.string()).optional(), observedSince: z.number().optional(),
-  activity: z.object({ requests: z.number().nonnegative(), errors: z.number().nonnegative(), inputTokens: z.number().nonnegative(), outputTokens: z.number().nonnegative(), cacheReadTokens: z.number().nonnegative() }).optional(),
-  accounts: z.array(z.object({ id: z.string(), active: z.boolean().optional(), fetchedAt: z.number().optional(), error: z.string().optional(), windows: z.array(z.object({ type: z.string(), group: z.string().optional(), utilization: z.number().min(0).max(1), resetsAt: z.number().finite() })) })),
-})) })
-export function parseProviderSnapshot(value: unknown): ProviderSnapshot { return snapshotSchema.parse(value) }
+export { parseProviderSnapshot } from '../../telemetry/providerView'
 
 /** Quota services must never stall navigation or hide current local activity. */
 export class ClaudeProviderFacts {

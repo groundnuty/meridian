@@ -1,4 +1,4 @@
-import { parseProviderSnapshot } from '../../../src/proxy/backends/providerStatus'
+import { parseProviderSnapshot } from '../../../src/telemetry/providerView'
 import { createRequire } from 'node:module'
 import { stripVTControlCharacters } from 'node:util'
 import { catalogPlugin, pluginCatalog, registerPlugin } from './pluginCatalog'

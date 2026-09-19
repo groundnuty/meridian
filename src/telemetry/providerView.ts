@@ -7,6 +7,34 @@ export interface ProviderUsage {
 }
 export interface ProviderSnapshot { providers: ProviderUsage[]; fetchedAt: number }
 export type ProviderFilter = 'all' | 'claude' | 'antigravity'
+/** Dependency-free validation: desktop builds independently of proxy packages. */
+export function parseProviderSnapshot(value: unknown): ProviderSnapshot {
+  const fail = (): never => { throw new Error('Invalid provider response') }
+  const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : fail()
+  const array = (v: unknown): unknown[] => Array.isArray(v) ? v : fail()
+  const string = (v: unknown): string => typeof v === 'string' ? v : fail()
+  const number = (v: unknown): number => typeof v === 'number' && Number.isFinite(v) ? v : fail()
+  const count = (v: unknown): number => { const n = number(v); return n >= 0 ? n : fail() }
+  const boolean = (v: unknown): boolean => typeof v === 'boolean' ? v : fail()
+  const optionalString = (v: unknown) => v === undefined ? undefined : string(v)
+  const optionalNumber = (v: unknown) => v === undefined ? undefined : number(v)
+  const input = object(value)
+  return { fetchedAt: number(input.fetchedAt), providers: array(input.providers).map(value => {
+    const p = object(value)
+    if (p.id !== 'claude' && p.id !== 'antigravity') return fail()
+    const activity = p.activity === undefined ? undefined : object(p.activity)
+    return { id: p.id, name: string(p.name), enabled: boolean(p.enabled), status: string(p.status), endpoint: string(p.endpoint), error: optionalString(p.error), models: p.models === undefined ? undefined : array(p.models).map(string), observedSince: optionalNumber(p.observedSince),
+      activity: activity && { requests: count(activity.requests), errors: count(activity.errors), inputTokens: count(activity.inputTokens), outputTokens: count(activity.outputTokens), cacheReadTokens: count(activity.cacheReadTokens) },
+      accounts: array(p.accounts).map(value => {
+        const a = object(value)
+        return { id: string(a.id), active: a.active === undefined ? undefined : boolean(a.active), fetchedAt: optionalNumber(a.fetchedAt), error: optionalString(a.error), windows: array(a.windows).map(value => {
+          const w = object(value), utilization = count(w.utilization)
+          if (utilization > 1) return fail()
+          return { type: string(w.type), group: optionalString(w.group), utilization, resetsAt: number(w.resetsAt) }
+        }) }
+      }) }
+  }) }
+}
 export function providerOverview(data: ProviderSnapshot, filter: ProviderFilter = 'all'): string {
   const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
   const windowLabel = (value: string) => ({'gemini-weekly':'Weekly','3p-weekly':'Weekly','gemini-5h':'5 hours','3p-5h':'5 hours','five_hour':'5 hours','seven_day':'Weekly'})[value as 'gemini-weekly'] || value.replaceAll('_', ' ')
