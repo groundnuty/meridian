@@ -49,7 +49,9 @@ abortable waiter sets. Tool batches are saved before the first tool block, prese
 original call IDs on replay, and become non-replayable when their results are
 being accepted or consumed. CLI loss still uses completed-history result recovery.
 Native-capability requests and OpenAI routes do not use this cache. Pi's example
-extension assigns IDs before SDK retries. OpenCode's V1 example plugin uses its
+extension assigns IDs before SDK retries and retains only a request hash/ID for an
+exact failed-turn retry. New prompts, session operations, changed payloads and
+successful/aborted turns reset that identity. OpenCode's V1 example plugin uses its
 public active assistant-message identity because its processor reruns header hooks
 on retry; a random ID per header-hook invocation would repeat generation. Optional `antigravityState.ts` persists
 Meridian-owned records in private SQLite with an exclusive lifetime owner guard.

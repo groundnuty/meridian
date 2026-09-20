@@ -846,7 +846,11 @@ The repository includes provider-scoped integrations for a provider named
 
 - Pi: load [antigravity-retry.js](../examples/pi-extension/antigravity-retry.js)
   with `pi -e /path/to/meridian/examples/pi-extension/antigravity-retry.js ...`.
-  Its supported payload hook adds an ID once before the SDK's HTTP retries.
+  Its supported payload hook adds an ID before the SDK's HTTP retries and retains
+  it for an exact failed-turn retry. Enable Pi's normal automatic retry setting
+  for partial-stream transport failures. New prompts, changed payloads, successful
+  or aborted turns, and session operations reset the ID. This uses bounded
+  in-memory state (one request hash and ID), not persisted conversation content.
 - OpenCode V1: copy [antigravity-retry.js](../examples/opencode-plugin/antigravity-retry.js)
   into the client's `plugins` directory. The header hook reads the active assistant
   message through OpenCode's public session API. That message survives processor
@@ -854,10 +858,19 @@ The repository includes provider-scoped integrations for a provider named
   not get guessed IDs; a failed metadata read fails explicitly. Other providers
   are untouched. This integration has been verified on OpenCode 1.18.31.
 
-These helpers cover the demonstrated automatic transport retry before client
-response delivery. They do not add automatic recovery to clients that stop after
-receiving a partial stream. The server can replay saved tool batches for explicit
-exact retries, but arbitrary partial-delivery client behavior is not verified.
+Both helpers cover automatic transport retry before client response delivery.
+Pi 0.72.1 additionally recovers the tested client-visible tool block followed by
+a broken stream: it rejects the incomplete assistant turn before executing tools,
+then retries the saved response with the same ID. This requires Pi to classify
+the transport error as retryable; it does not repair arbitrary malformed streams.
+
+OpenCode 1.18.31 partial-stream recovery remains unsupported. The live fault test
+observed an approved tool execute before the final message marker. Its plugin
+then changed the retry instructions, and Meridian rejected the changed request
+with 409. Reusing a saved tool response is not proof that a client will avoid
+executing the action twice. Do not work around this by changing the ID or weakening
+request validation. Recovery needs client-side delivery buffering or reconciliation
+with the client's completed tool records, followed by an actual-client fault test.
 Approvals remain in the client and are never granted by these helpers.
 
 ```sh
@@ -868,3 +881,14 @@ E2E_AGY_LOST_TOOL=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-exte
 The relay consumes a complete tool-call response, drops it before delivery, and
 requires the real client to retry through the saved-response path with the same
 request, message and tool IDs, one approved execution, and zero HTTP errors.
+
+To test client-visible partial tool delivery (currently passing for Pi; an
+intentional diagnostic failure for OpenCode):
+
+```sh
+E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+The relay sends tool blocks, waits 250 ms, records actual executions, then severs
+the connection before `message_delta`/`message_stop`. The gate requires no
+execution before the disconnect and normal approval/result recovery afterward.

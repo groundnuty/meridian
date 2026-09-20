@@ -471,6 +471,41 @@ cancellation gate, `meridian-agy-pi-extensions-A9s75q`, passed eight checks / 15
 requests with zero HTTP errors. Both used the rebuilt cancellation-join fix. The final local suite passed 4,706
 tests with zero failures across 15 isolated groups; typecheck and Node build passed.
 
+## Client-visible partial tool response recovery
+
+```sh
+E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+This distinct fault sends the complete tool blocks to the actual client, waits
+250 ms, records the execution audit, and severs delivery before `message_delta`
+and `message_stop`. It enables Pi's ordinary automatic retry (two attempts),
+loads the example retry extension, and requires identical saved request/message/
+tool IDs, zero executions before disconnect, one execution after approval, and
+zero HTTP errors. It also runs denial, questions/cancellation, dynamic tools and
+delayed approval. Do not combine it with the upstream cancellation flag.
+
+**Verified 2026-09-19:** macOS arm64, Node 22.22.3, `agy` 1.2.7,
+`gemini-3.8-flash-low`, Pi 0.72.1. Initial artifact
+`meridian-agy-pi-extensions-LaMWHl` passed seven existing checks/15 requests,
+with zero executions before disconnect. Final gate artifact
+`meridian-agy-pi-extensions-9UDOi4` passed all eight checks / 15 requests,
+including the explicit zero-execution assertion, with zero HTTP errors.
+The extension now retains a request
+hash and ID across an exact failed-turn retry; new prompts, session operations,
+changed requests and successful/aborted turns clear it.
+
+**Retained failure:** OpenCode 1.18.31 artifact
+`meridian-agy-opencode-extensions-LMfDyw` executed the approved receipt once before
+the disconnect. Its fixture plugin then changed system instructions from awaiting
+a receipt to having observed one; the next request reused the active assistant ID
+with those changed instructions. Meridian correctly returned 409 (four observed
+attempts), and the client turn failed. The audit and public client session showed
+the completed action. This is not a passing OpenCode recovery gate. Changing the
+request ID or weakening fingerprint checks would risk repeating the action.
+Client-side buffering or completed-action reconciliation remains to be implemented
+and verified before claiming OpenCode partial-stream recovery.
+
 ## Quick Start
 
 ```bash

@@ -13,8 +13,11 @@ import { preflightFault } from './lib-antigravity-preflight-fault.mjs'
 import { startProxyServer } from '../dist/server.js'
 
 const lostTool = process.env.E2E_AGY_LOST_TOOL === '1'
+const partialTool = process.env.E2E_AGY_PARTIAL_TOOL === '1'
+assert(!partialTool || lostTool, 'Partial delivery requires the lost-tool gate')
 const cancelTool = process.env.E2E_AGY_CANCEL_TOOL === '1'
 assert(!cancelTool || lostTool, 'Tool cancellation requires the lost-tool gate')
+assert(!(cancelTool && partialTool), 'Choose upstream cancellation or downstream partial delivery')
 let delayedTelemetry = false
 let deliveredTool, replayedTool
 const lostAnswer = process.env.E2E_AGY_LOST_ANSWER === '1'
@@ -43,7 +46,7 @@ const receipt = `CLIENT_${randomUUID()}`
 const env = { ...process.env }
 for (const key of Object.keys(env)) if (/^(OPENCODE_|MERIDIAN_|CLAUDE_PROXY_|ANTHROPIC_|CLAUDE_|GEMINI_API_KEY|GOOGLE_API_KEY)/.test(key)) delete env[key]
 env.MERIDIAN_EXTENSION_AUDIT = auditPath; env.MERIDIAN_EXTENSION_RECEIPT = receipt
-const report = { disconnect, lostAnswer, lostTool, cancelTool, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
+const report = { disconnect, lostAnswer, lostTool, cancelTool, partialTool, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
 const requests = [], events = [], apiLog = [], httpErrors = []
 let proxy, relay, child, exited = false, stdout = '', stderr = ''
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -95,8 +98,16 @@ try {
           const requestId = req.headers['idempotency-key'] || JSON.parse(raw).meridian_request_id
           assert(requestId, 'Actual client extension must supply the retry identity')
           deliveredTool = { requestId, message: frames.find(frame => frame.type === 'message_start').message.id, calls }
+          if (partialTool) {
+            const terminal = wire.indexOf('event: message_delta')
+            assert(terminal > 0, 'Partial fault must omit the terminal message frames')
+            res.writeHead(response.status, { 'content-type': response.headers.get('content-type') })
+            res.write(wire.slice(0, terminal))
+            await delay(250)
+            report.executionsBeforeDisconnect = (await audit()).filter(event => event.event === 'executed').length
+          }
           res.destroy()
-          console.log(cancelTool ? 'Cancelled upstream tool delivery during telemetry before client delivery' : 'Injected lost complete tool-call response before client delivery')
+          console.log(partialTool ? 'Injected client-visible tool block followed by stream loss' : cancelTool ? 'Cancelled upstream tool delivery during telemetry before client delivery' : 'Injected lost complete tool-call response before client delivery')
           return
         }
         res.writeHead(response.status, { 'content-type': response.headers.get('content-type') }); res.end(wire); return
@@ -153,7 +164,7 @@ try {
   if (client === 'pi') {
     env.PI_CODING_AGENT_DIR = config; env.PI_OFFLINE = '1'; env.PI_TELEMETRY = '0'
     await writeFile(join(config, 'models.json'), JSON.stringify({ providers: { 'meridian-agy': { baseUrl, apiKey: 'fixture', api: 'anthropic-messages', models: [{ id: modelID, name: modelID, reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }))
-    await writeFile(join(config, 'settings.json'), JSON.stringify({ retry: { enabled: false }, compaction: { enabled: false } }))
+    await writeFile(join(config, 'settings.json'), JSON.stringify({ retry: { enabled: partialTool, maxRetries: 2, baseDelayMs: 500 }, compaction: { enabled: false } }))
     launch(['--provider', 'meridian-agy', '--model', modelID, '--thinking', 'off', '--mode', 'rpc', '--no-session', '--no-builtin-tools', '--no-extensions', '-e', fileURLToPath(new URL('./fixtures/agy-pi-extension.js', import.meta.url)), ...(lostTool ? ['-e', fileURLToPath(new URL('../examples/pi-extension/antigravity-retry.js', import.meta.url))] : []), '--no-skills', '--no-context-files', '--no-prompt-templates', '--no-themes'])
     let buffer = ''
     child.stdout.on('data', value => {
@@ -173,12 +184,12 @@ try {
         const request = await until(() => {
           const current = events.slice(start)
           const dialog = current.find(event => event.type === 'extension_ui_request' && ['confirm', 'select'].includes(event.method))
-          assert(dialog || !current.some(event => event.type === 'agent_end'), 'Pi ended without the requested dialog: ' + JSON.stringify(current))
+          assert(dialog || partialTool || !current.some(event => event.type === 'agent_end'), 'Pi ended without the requested dialog: ' + JSON.stringify(current))
           return dialog
         }, 'extension dialog')
         await dialog(request, send)
       }
-      const end = await until(() => events.slice(start).find(event => event.type === 'agent_end'), 'agent end')
+      const end = await until(() => events.slice(start).find(event => event.type === 'agent_end' && (!partialTool || !event.messages?.some(message => message.stopReason === 'error'))), 'agent end')
       if (!interrupted) assert(!end.messages?.some(message => message.stopReason === 'error'), JSON.stringify(end))
       else report.interruptedClientResult = end
       const answer = end.messages?.findLast(message => message.role === 'assistant')
@@ -309,6 +320,10 @@ try {
     mark('official configuration timeout recovers before any client generation')
   }
   if (cancelTool) { assert(delayedTelemetry && report.cancelledToolStream); mark('Upstream tool delivery cancelled during telemetry; saved call and client results still recover') }
+  if (partialTool) {
+    assert.equal(report.executionsBeforeDisconnect, 0, 'Client must not execute an incomplete response')
+    mark('Client-visible partial tool stream recovered before any action execution')
+  }
   if (lostTool) { assert(replayedTool, 'Actual client must automatically recover the saved tool call'); mark('Lost tool-call response recovered with stable IDs and one approved client execution') }
   if (disconnect) assert(dropped)
   if (lostAnswer) { assert(recoveredWire, 'Client must recover through the saved-answer path'); mark('Lost completed answer replayed with identical ID/content/usage and no new model invocation') }
