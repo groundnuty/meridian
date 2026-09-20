@@ -699,6 +699,31 @@ five-second CLI tool wait to exercise delayed approval efficiently; production's
 default remains sixty seconds. This verifies the listed client mechanisms,
 not arbitrary third-party plugin code or TUI-only extension rendering.
 
+### Disconnect after a completed client action
+
+If a tool-result continuation is cancelled before Meridian emits another client
+call, an exact retry can replay its completed history after the old CLI exits.
+Retries arriving during cleanup wait for that exit. The result IDs stay consumed;
+a bounded exception binds the entire history, tool result, instructions, tools,
+model, session, execution controls and tool choice. Concurrent retries cannot
+start competing replays, and success removes the exception.
+
+With `MERIDIAN_AGY_STATE_PATH`, these joined-interruption fingerprints persist for
+up to 30 minutes (at most 256). They contain hashes, not prompts or tool results.
+Clients must still resend the complete matching request. This does not restore
+in-flight processes after a crash, cache a lost completed response, or guarantee
+exactly-once execution. No automatic replay exception is granted after a new
+client tool was emitted, or when native browser/subagent capabilities are enabled.
+
+The actual Pi/OpenCode fault gate drops delivery after accepting a completed
+tool result, requires automatic client recovery and one audited execution, and
+rejects every HTTP error:
+
+```sh
+E2E_AGY_DISCONNECT=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_DISCONNECT=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
 ## Antigravity extensions and custom grammars
 
 Embedders can pass `antigravity.plugins` or `pluginPaths`; CLI users can set

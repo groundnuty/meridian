@@ -394,6 +394,38 @@ export class AntigravityRuntime {
     this.consumedTools.add(key)
     if (this.consumedTools.size > 4096) this.consumedTools.delete(this.consumedTools.values().next().value!)
   }
+  private readonly interruptedContinuations = new Map<string, number>()
+  private readonly interruptedJoins = new Map<string, Promise<void>>()
+  waitForInterruptedContinuation(request: AgRequest): Promise<void> {
+    return this.interruptedJoins.get(this.continuationKey(request)) ?? Promise.resolve()
+  }
+  async recordInterruptedAfterJoin(request: AgRequest, settled: Promise<void>): Promise<void> {
+    const key = this.continuationKey(request)
+    const joining = settled.then(() => this.rememberInterruptedContinuation(request))
+    this.interruptedJoins.set(key, joining)
+    try { await joining } finally { this.interruptedJoins.delete(key) }
+  }
+  private continuationKey(request: AgRequest): string {
+    return createHash("sha256").update(contractKey(request) + historyKey(request.messages) + stable(request.tool_choice)).digest("hex")
+  }
+  canRetryContinuation(request: AgRequest): boolean {
+    if (this.options.allowNativeBrowser || this.options.allowNativeSubagents) return false
+    const key = this.continuationKey(request)
+    for (const [id, expires] of this.interruptedContinuations) if (expires <= Date.now()) this.interruptedContinuations.delete(id)
+    return this.interruptedContinuations.has(key) || !!this.state?.get("interrupted-continuations", key, "")
+  }
+  rememberInterruptedContinuation(request: AgRequest): void {
+    const key = this.continuationKey(request), expires = Date.now() + 30 * 60_000
+    this.state?.put("interrupted-continuations", key, "", "true", expires, 256, 65536)
+    this.interruptedContinuations.delete(key)
+    this.interruptedContinuations.set(key, expires)
+    if (this.interruptedContinuations.size > 256) this.interruptedContinuations.delete(this.interruptedContinuations.keys().next().value!)
+  }
+  forgetInterruptedContinuation(request: AgRequest): void {
+    const key = this.continuationKey(request)
+    this.state?.delete("interrupted-continuations", key, "")
+    this.interruptedContinuations.delete(key)
+  }
   mcpUrl = ""
   draining = false
   cliVersion = ""

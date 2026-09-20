@@ -16,7 +16,13 @@ backend selector.
 prompt rendering. Its opt-in numeric thinking-budget normalization maps to Gemini
 effort variants before continuation identity is calculated; runtime model discovery
 checks availability, and responses expose the effective model.
-`antigravityRuntime.ts` owns the official CLI subprocesses and loopback MCP transport. `antigravityAttachments.ts` materializes supplied images,
+`antigravityRuntime.ts` owns the official CLI subprocesses and loopback MCP transport.
+Its bounded interrupted-continuation fingerprints permit only exact completed-result
+replay after cancellation joins the old process, before any subsequent client
+call was emitted and with native actions disabled. Exact concurrent retries wait
+for joining and use the existing result-ID claim; successful replay removes the
+exception without clearing consumed IDs. Optional SQLite preserves only the
+fingerprints, not in-flight work. `antigravityAttachments.ts` materializes supplied images,
 documents and adapted media in a disposable workspace; the hook permits exact
 generated paths. `antigravityUrl.ts` validates/pins public HTTPS image downloads;
 `antigravityMedia.ts` owns local ffmpeg/Whisper adaptation. `antigravityNative.ts`

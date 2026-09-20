@@ -107,6 +107,7 @@ async function main(inputPrompt) {
     const calls = Array.from({ length: prompt.includes('PARALLEL2') ? 2 : 1 }, (_, n) => rpc('tools/call', { name: tools[0].name, arguments: { key: `probe${n}` } }))
     if (prompt.includes('RPC_RETRY')) calls.push(rpc('tools/call', {name:tools[0].name,arguments:{key:'probe0'}},2))
     const results = await Promise.all(calls)
+    if (prompt.includes('NEXT_TOOL')) await rpc('tools/call', { name: tools[0].name, arguments: { key: 'next' } })
     if (prompt.includes('STEERING')) {
       const followup = JSON.parse(results[0].content[0].text).meridian_client_followup
       answer = JSON.stringify(followup)

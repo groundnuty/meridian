@@ -52,6 +52,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       if (signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
       const run = await runtime.create(body, signal)
       if (previous) run.continuation = "client-context-replay"
+      runtime.forgetInterruptedContinuation(body)
       for (const result of results) runtime.rememberConsumedTool(result.tool_use_id)
       run.busy = true
       return run
@@ -60,6 +61,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     }
   }
   async function selectRun(body: AgRequest, signal: AbortSignal): Promise<AntigravityRun> {
+    await runtime.waitForInterruptedContinuation(body)
     // Clients may append steering as text in the result message or as another
     // user message. Match the delivered assistant prefix before accepting either.
     const suffixStart = body.messages.findLastIndex(message => message.role === "assistant") + 1
@@ -69,7 +71,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     // An explicitly appended user turn may replay completed context. Duplicate
     // protection applies to result continuations, not unrelated new user input.
     const continuationResults = owners.length || blocks(body.messages.at(-1)!).some(block => block.type === "tool_result") ? results : []
-    if (continuationResults.some(result => runtime.hasConsumedTool(result.tool_use_id) || runtime.recoveringTools.has(result.tool_use_id))) throw new AntigravityError("Antigravity tool result was already consumed; append the subsequent assistant response before continuing", 409)
+    if (continuationResults.some(result => runtime.recoveringTools.has(result.tool_use_id)) || (continuationResults.some(result => runtime.hasConsumedTool(result.tool_use_id)) && !runtime.canRetryContinuation(body))) throw new AntigravityError("Antigravity tool result was already consumed; append the subsequent assistant response before continuing", 409)
     // A validated complete history is also a stateless recovery request. Only
     // correlate against live processes; never re-execute a tool on the client's behalf.
     if (owners.length) {
@@ -122,6 +124,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       let status = 200
       let failure: string | undefined
       let textOpen = false
+      let emittedTool = false
       let reason: "end_turn" | "tool_use" | "stop_sequence" = "end_turn"
       const stops = new AgTextStops(body.stop_sequences ?? [])
       const base = { id, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage } }
@@ -154,6 +157,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           }
           if (textOpen) { emit?.("content_block_stop", { type: "content_block_stop", index: content.length - 1 }); textOpen = false }
           if (event.kind === "tool") {
+            emittedTool = true
             const calls = await run.toolBatch(event.call)
             for (const call of calls) {
             if (body.tool_choice?.type === "none" || (body.tool_choice?.type === "tool" && body.tool_choice.name !== call.name)) throw new AntigravityError("Antigravity requested a tool excluded by tool_choice", 502, "api_error")
@@ -181,6 +185,13 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         run.abort(error instanceof Error ? error : new Error(String(error)))
         throw error
       } finally {
+        // Only retry an exact completed-result continuation after joining its
+        // cancelled process, before any new tool call could reach the client.
+        // Native actions cannot be proven side-effect-free, so never replay them.
+        const suffix = body.messages.slice(body.messages.findLastIndex(message => message.role === "assistant") + 1)
+        if (status === 499 && !emittedTool && !runtime.options.allowNativeBrowser && !runtime.options.allowNativeSubagents && suffix.flatMap(blocks).some(block => block.type === "tool_result")) {
+          await runtime.recordInterruptedAfterJoin(body, run.settled)
+        }
         const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens }
         runtime.record(metric)
         await runtime.plugins.observe("onTelemetry", metric, request.signal)

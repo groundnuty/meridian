@@ -11,6 +11,8 @@ import { Readable } from 'node:stream'
 import { once } from 'node:events'
 import { startProxyServer } from '../dist/server.js'
 
+const disconnect = process.env.E2E_AGY_DISCONNECT === '1'
+let dropped = false
 const client = process.env.E2E_CLIENT || 'pi'
 assert(['pi', 'opencode'].includes(client))
 const binary = client === 'pi' ? process.env.E2E_PI_BIN || 'pi' : process.env.E2E_OPENCODE_BIN || 'opencode'
@@ -25,7 +27,7 @@ const receipt = `CLIENT_${randomUUID()}`
 const env = { ...process.env }
 for (const key of Object.keys(env)) if (/^(OPENCODE_|MERIDIAN_|CLAUDE_PROXY_|ANTHROPIC_|CLAUDE_|GEMINI_API_KEY|GOOGLE_API_KEY)/.test(key)) delete env[key]
 env.MERIDIAN_EXTENSION_AUDIT = auditPath; env.MERIDIAN_EXTENSION_RECEIPT = receipt
-const report = { client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
+const report = { disconnect, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
 const requests = [], events = [], apiLog = [], httpErrors = []
 let proxy, relay, child, exited = false, stdout = '', stderr = ''
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -44,7 +46,7 @@ async function until(fn, label, timeout = 180000) {
   throw new Error(`Timeout: ${label}; ${stderr}`)
 }
 try {
-  proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true, pendingToolTimeoutMs: 5000 } })
+  proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true, pendingToolTimeoutMs: 5000, ...(disconnect ? { statePath: join(root, 'state.sqlite') } : {}) } })
   if (!proxy.server.listening) await once(proxy.server, 'listening')
   const address = proxy.server.address(); assert(address && typeof address !== 'string')
   const upstream = `http://127.0.0.1:${address.port}`
@@ -56,6 +58,22 @@ try {
       if (raw) { requests.push(JSON.parse(raw)); await writeFile(join(root, 'requests.json'), JSON.stringify(requests, null, 2)) }
       const response = await fetch(upstream + req.url, { method: req.method, headers: { 'content-type': 'application/json' }, body: raw || undefined, signal: abort.signal })
       if (!response.ok) { const text = await response.clone().text(); httpErrors.push({ status: response.status, text }); console.log('HTTP', response.status, text) }
+      const latest = raw ? JSON.parse(raw).messages?.at(-1)?.content : undefined
+      if (disconnect && !dropped && response.ok && Array.isArray(latest) && latest.some(block => block.type === 'tool_result' && JSON.stringify(block.content).includes(receipt))) {
+        assert.equal((await audit()).filter(event => event.event === 'executed').length, 1)
+        // Headers arrive only after the backend accepts the completed tool result.
+        // Consume the first SSE frame, then sever delivery before the client sees it.
+        const reader = response.body.getReader()
+        const first = await reader.read()
+        assert(!first.done, 'Fault must interrupt an actual upstream response')
+        dropped = true
+        report.droppedToolIds = latest.filter(block => block.type === 'tool_result').map(block => block.tool_use_id)
+        res.destroy()
+        await reader.cancel('Injected client connection loss')
+        reader.releaseLock()
+        console.log('Injected disconnect after completed tool result acceptance')
+        return
+      }
       res.writeHead(response.status, { 'content-type': response.headers.get('content-type') })
       Readable.fromWeb(response.body).on('error', error => res.destroy(error)).pipe(res)
     } catch (error) { if (!res.headersSent) res.writeHead(500); res.end(String(error)) }
@@ -88,7 +106,7 @@ try {
       const reply = await until(() => events.find(event => event.type === 'response' && event.id === id), type)
       assert(reply.success, JSON.stringify(reply)); return reply.data
     }
-    async function turn(prompt, dialog) {
+    async function turn(prompt, dialog, interrupted = false) {
       const start = events.length
       await command('prompt', { message: prompt })
       if (dialog) {
@@ -101,15 +119,21 @@ try {
         await dialog(request, send)
       }
       const end = await until(() => events.slice(start).find(event => event.type === 'agent_end'), 'agent end')
-      assert(!end.messages?.some(message => message.stopReason === 'error'), JSON.stringify(end))
+      if (!interrupted) assert(!end.messages?.some(message => message.stopReason === 'error'), JSON.stringify(end))
+      else report.interruptedClientResult = end
       const answer = end.messages?.findLast(message => message.role === 'assistant')
       return answer?.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? ''
     }
     await command('get_state')
-    const allowed = await turn('Call client_receipt exactly once with label ORIGINAL. Report the returned value. Do not use any other tools.', async (request, send) => {
+    let allowed = await turn('Call client_receipt exactly once with label ORIGINAL. Report the returned value. Do not use any other tools.', async (request, send) => {
       assert.equal(request.method, 'confirm'); assert.equal((await audit()).filter(e => e.event === 'executed').length, 0)
       send({ type: 'extension_ui_response', id: request.id, confirmed: true })
-    })
+    }, disconnect)
+    if (disconnect) {
+      assert(dropped, 'Connection fault must be injected')
+      assert(allowed.includes(receipt), 'Pi must automatically retry the interrupted continuation: ' + allowed)
+      mark('Pi automatically recovers accepted-result disconnect without repeating the client action')
+    }
     assert(allowed.includes(`CLIENT_PATCHED:${receipt}`), allowed)
     assert.equal((await audit()).filter(e => e.event === 'executed').length, 1)
     mark('real Pi extension approval, argument transform and custom tool execution')
@@ -150,7 +174,7 @@ try {
     await writeFile(join(root, 'openapi.json'), JSON.stringify(await api('/doc')))
     const session = await api('/session', { title: 'Client extension acceptance' })
     const path = `/session/${session.id}`
-    async function turn(text, interact) {
+    async function turn(text, interact, interrupted = false) {
       const previous = await api(path + '/message')
       await api(path + '/prompt_async', { model: { providerID: 'meridian-agy', modelID }, parts: [{ type: 'text', text }] })
       if (interact) await interact(api)
@@ -158,14 +182,21 @@ try {
         const messages = await api(path + '/message')
         const last = messages.at(-1)
         if (messages.length <= previous.length || last?.info.role !== 'assistant' || !last.info.time?.completed || (await api('/session/status'))[session.id]?.type === 'busy') return
-        assert(!last.info.error, JSON.stringify(last)); return JSON.stringify(last)
+        if (!interrupted) assert(!last.info.error, JSON.stringify(last))
+        else report.interruptedClientResult = last
+        return JSON.stringify(last)
       }, 'OpenCode turn')
     }
-    const allowed = await turn('Call client_receipt exactly once and report its entire returned value.', async api => {
+    let allowed = await turn('Call client_receipt exactly once and report its entire returned value.', async api => {
       const request = await until(async () => (await api('/permission')).find(p => p.sessionID === session.id && p.permission === 'client_receipt'), 'permission prompt')
       assert.equal((await audit()).filter(e => e.event === 'executed').length, 0)
       await api(`/permission/${request.id}/reply`, { reply: 'once' })
-    })
+    }, disconnect)
+    if (disconnect) {
+      assert(dropped, 'Connection fault must be injected')
+      assert(allowed.includes(receipt), 'OpenCode must automatically retry the interrupted continuation: ' + allowed)
+      mark('OpenCode automatically recovers accepted-result disconnect without repeating the client action')
+    }
     assert(allowed.includes(receipt) && allowed.includes('CLIENT_PLUGIN_AFTER'), allowed)
     assert.equal((await audit()).filter(e => e.event === 'executed').length, 1)
     mark('real OpenCode plugin tool, permission approval and result hook')
@@ -207,6 +238,7 @@ try {
   const results = requests.flatMap(r => r.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(b => b.type === 'tool_result')
   assert(results.some(r => JSON.stringify(r.content).includes(receipt)), 'Private receipt must enter via actual client tool_result')
   assert(results.some(r => r.is_error), 'Denial must enter as a client tool error')
+  if (disconnect) assert(dropped)
   assert.deepEqual(httpErrors, [], 'A green client retry must not hide bridge errors')
   assert.equal(version(executable), report.cliVersion)
   report.requests = requests.length

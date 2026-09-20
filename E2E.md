@@ -5571,3 +5571,47 @@ rerun supplied `MERIDIAN_AGY_GRAMMAR_PYTHON` pointing to an isolated Python
 environment with Lark installed. No application change or relaxed assertion was
 used to resolve that prerequisite. These runs do not classify the previously
 recorded intermittent CLI configuration preflight 503s.
+
+### Antigravity disconnect after accepted tool results
+
+```sh
+E2E_AGY_DISCONNECT=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_DISCONNECT=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+This mode uses the actual extension/plugin clients and private persistent state.
+The relay observes the completed client tool result, waits for the backend to
+accept it and begin SSE, then drops the connection before delivering a frame to
+the client. The final gate requires automatic client recovery, the private
+receipt in the final assistant response, exactly one audited execution for the
+interrupted action, and no HTTP errors. It then runs the existing extension
+approval/denial/question/cancellation/delayed-approval cases. No user follow-up
+prompt supplies the receipt or requests recovery.
+
+Retained failures:
+
+- Pi `meridian-agy-pi-extensions-ve4mFB`: direct retries received consumed-result
+  409s. An explicit new user prompt eventually recovered the receipt, but the
+  run also observed a configuration-preflight 503 (exit=1, signal=null,
+  killed=true), so it is not a passing run or a fix for that preflight issue.
+- OpenCode `meridian-agy-opencode-extensions-f8zFlE`: repeated 409s blocked both
+  automatic retry and explicit continuation, because the client combined the
+  new prompt with the consumed result in one user message.
+- Pi `meridian-agy-pi-extensions-yTCl0H`: initial exact-retry implementation
+  recovered automatically but exposed one 409 while the old CLI was joining.
+  The final implementation makes matching retries wait for that join instead
+  of rejecting them during cleanup.
+
+Direct tests cover exact cancelled-result recovery, changed-contract rejection,
+preflight failure without losing retry eligibility, waiting for cleanup,
+concurrent retry claims, continued successful-duplicate rejection, no recovery
+after another client tool is emitted, exclusion of native grants, and persisted
+fingerprint removal across restart. This does not establish in-flight crash
+resumption or exactly-once execution after arbitrary response loss.
+
+Final live verification: Pi `meridian-agy-pi-extensions-9qSKyO` passed seven
+checks over 15 HTTP requests; OpenCode
+`meridian-agy-opencode-extensions-AFmjMK` passed seven over 13 requests. Both
+recorded zero HTTP errors and one client execution for the interrupted action.
+Versions: Pi 0.72.1, OpenCode 1.18.31, official agy 1.2.7, Gemini 3.8 Flash Low,
+Node 22.22.3, macOS arm64. Other platforms remain unverified by these live gates.

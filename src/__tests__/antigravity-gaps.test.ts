@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { join, resolve, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { parseAgRequest } from '../proxy/backends/antigravityProtocol'
 import { AgState } from '../proxy/backends/antigravityState'
 import { AgResponseStore, agResponseScope } from '../proxy/backends/antigravityResponses'
 import { agOpenai } from '../proxy/backends/antigravityOpenai'
@@ -139,6 +140,27 @@ describe('Antigravity durable state', () => {
       expect(store.get('live', scope).response).toEqual(response)
       expect(store.get('third', scope).response).toEqual(response)
     } finally { db.close() }
+  })
+  it('persists only exact interrupted continuation eligibility across runtime restart', async () => {
+    const path = join(root(), 'state.sqlite')
+    const first = fixture(path)
+    const request = parseAgRequest({ model: 'fixture-model', max_tokens: 100, tools: [], messages: [
+      { role: 'user', content: 'lookup' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'completed', name: 'lookup', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'completed', content: 'receipt' }] },
+    ] })
+    first.runtime.rememberConsumedTool('completed')
+    first.runtime.rememberInterruptedContinuation(request)
+    await first.server.closeBackend()
+    const second = fixture(path)
+    expect(second.runtime.hasConsumedTool('completed')).toBe(true)
+    expect(second.runtime.canRetryContinuation(request)).toBe(true)
+    expect(second.runtime.canRetryContinuation({ ...request, system: 'changed' })).toBe(false)
+    second.runtime.forgetInterruptedContinuation(request)
+    await second.server.closeBackend()
+    const third = fixture(path)
+    expect(third.runtime.canRetryContinuation(request)).toBe(false)
+    expect(third.runtime.hasConsumedTool('completed')).toBe(true)
   })
   it('bounds persistent records and prunes expiry', () => {
     const db = new AgState(join(root(), 'state.sqlite'))

@@ -628,3 +628,90 @@ describe("Antigravity client plugin context changes", () => {
     expect((await send(updated)).status).toBe(200)
   })
 })
+
+
+describe("Antigravity interrupted tool-result continuations", () => {
+  it("replays an exact cancelled continuation after join without relaxing identity or successful duplicate protection", async () => {
+    const { send, runtime } = fixture()
+    const request = initial()
+    const first = await decode(await send(request))
+    const id = first.content.find(block => block.type === "tool_use")!.id!
+    const continuation = { ...request, stream: true, messages: [...request.messages,
+      { role: "assistant", content: first.content },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "COMPLETED_ONCE" }] },
+    ] }
+    const response = await send(continuation)
+    const reader = response.body!.getReader()
+    expect((await reader.read()).done).toBe(false)
+    await reader.cancel()
+    const parsed = parseAgRequest(continuation)
+    for (let attempt = 0; attempt < 100 && !runtime.canRetryContinuation(parsed); attempt++) await new Promise(resolve => setTimeout(resolve, 10))
+    expect(runtime.canRetryContinuation(parsed)).toBe(true)
+    expect(runtime.runs.size).toBe(0)
+    expect(runtime.hasConsumedTool(id)).toBe(true)
+    for (const changed of [{ system: "Changed" }, { max_tokens: 200 }, { model: "fixture-model-high" }, { meridian_session_key: "other" }, { tool_choice: { type: "none" } }]) {
+      expect((await send({ ...continuation, ...changed })).status).toBe(409)
+    }
+    const verify = runtime.verifyAccount.bind(runtime)
+    runtime.verifyAccount = async () => { throw new Error("temporary preflight failure") }
+    expect((await send(continuation)).status).toBe(503)
+    expect(runtime.canRetryContinuation(parsed)).toBe(true)
+    runtime.verifyAccount = verify
+    const retry = await send({ ...continuation, stream: false })
+    expect(retry.status).toBe(200)
+    expect((await decode(retry)).content[0]?.text).toBe("COMPLETED_ONCE")
+    expect(runtime.canRetryContinuation(parsed)).toBe(false)
+    expect((await send(continuation)).status).toBe(409)
+  })
+  it("waits for cancellation cleanup and admits only one simultaneous exact retry", async () => {
+    const { send, runtime } = fixture()
+    const request = { ...initial(), messages: [
+      { role: "user", content: "lookup" },
+      { role: "assistant", content: [{ type: "tool_use", id: "completed", name: "lookup", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "completed", content: "once" }] },
+    ] }
+    runtime.rememberConsumedTool("completed")
+    let release!: () => void
+    const cleanup = new Promise<void>(resolve => { release = resolve })
+    const joining = runtime.recordInterruptedAfterJoin(parseAgRequest(request), cleanup)
+    const first = send(request), second = send(request)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(runtime.preparing).toBe(0)
+    expect(runtime.runs.size).toBe(0)
+    release()
+    await joining
+    const responses = await Promise.all([first, second])
+    expect(responses.map(response => response.status).sort()).toEqual([200, 409])
+    const success = responses.find(response => response.status === 200)!
+    expect((await decode(success)).content[0]?.text).toBe("once")
+  })
+  it("does not replay an interrupted response once another client tool was emitted", async () => {
+    const { send, runtime } = fixture()
+    const request = initial("NEXT_TOOL")
+    const first = await decode(await send(request))
+    const continuation = { ...request, stream: true, messages: [...request.messages,
+      { role: "assistant", content: first.content },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: first.content.find(block => block.type === "tool_use")!.id, content: "once" }] },
+    ] }
+    const response = await send(continuation)
+    const reader = response.body!.getReader()
+    let wire = ""
+    while (!wire.includes('"type":"tool_use"')) {
+      const next = await reader.read()
+      expect(next.done).toBe(false)
+      wire += new TextDecoder().decode(next.value)
+    }
+    await reader.cancel()
+    await Promise.all([...runtime.runs.values()].map(async run => { run.abort(new Error("fixture cleanup")); await run.settled }))
+    expect(runtime.canRetryContinuation(parseAgRequest(continuation))).toBe(false)
+    expect((await send(continuation)).status).toBe(409)
+  })
+  it("does not make cancelled native-capability requests replayable", () => {
+    for (const options of [{ allowNativeBrowser: true }, { allowNativeSubagents: true }]) {
+      const { runtime } = fixture(options)
+      const request = parseAgRequest(initial())
+      runtime.rememberInterruptedContinuation(request)
+      expect(runtime.canRetryContinuation(request)).toBe(false)
+    }
+  })
+})
