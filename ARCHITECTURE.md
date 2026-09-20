@@ -28,9 +28,9 @@ generated paths. `antigravityUrl.ts` validates/pins public HTTPS image downloads
 `antigravityMedia.ts` owns local ffmpeg/Whisper adaptation. `antigravityNative.ts`
 defines the separately opted-in browser/subagent policy; browser MCP uses isolated
 Chrome. `antigravityProcess.ts` contains platform quoting and process termination.
-`antigravityProbe.ts` runs only official version/configuration commands, bounds
+`antigravityProbe.ts` runs only official version/configuration/model-discovery commands, bounds
 output and deadlines, and joins termination (including forced kill) before one
-configuration-timeout retry. Runtime account validation remains fresh and shared
+timeout retry for configuration or model discovery (never version or ordinary exits). Runtime account validation remains fresh and shared
 only among concurrent callers; settings refusals and ordinary command failures
 are never retried or replaced with cached authorization.
 `antigravityOpenai.ts` validates supported OpenAI subsets before shared translation;
@@ -65,6 +65,13 @@ Meridian-owned records in private SQLite with an exclusive lifetime owner guard.
 `antigravitySessions.ts` atomically claims exact completed/joined text/client-tool
 native mappings and uses the public CLI conversation flag. In-flight processes
 never enter that durable cache; private CLI transcripts are never read.
+`antigravitySetup.ts` owns explicit Pi/OpenCode client configuration, separate from
+server orchestration. The build packages self-contained retry integrations under
+`dist/antigravity-clients`; npm, Nix and Docker installations carry those assets.
+Setup prepares edits before writing, preserves unrelated settings, rejects malformed
+or conflicting input, creates private backups and uses per-file atomic replacement.
+Client defaults change only with `--set-default`; model limits are conservative
+client settings, not provider-enforced generation caps.
 `antigravityPlugins.ts` exposes explicit Antigravity request transforms and isolated
 response/telemetry observers, separate from Claude SDK plugins.
 `antigravityGrammar.ts` validates custom payloads in bounded worker/Python jobs

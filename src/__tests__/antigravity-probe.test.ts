@@ -30,7 +30,7 @@ else {
      const old=Number(fs.readFileSync(path.join(root,'old-pid'),'utf8'));
      try {process.kill(old,0);process.exit(43);} catch(e) {if(e.code !== 'ESRCH') throw e;}
    }
-   console.log(mode === 'malformed' ? 'not-json' : JSON.stringify({command:{data:{config:{customModelsConfig:{},modelProvider:mode === 'provider' ? 'api' : '',useG1Credits:mode === 'paid'}}}}));
+   console.log(process.argv[2] === 'models' ? 'gemini-test\\tGemini Test' : mode === 'malformed' ? 'not-json' : JSON.stringify({command:{data:{config:{customModelsConfig:{},modelProvider:mode === 'provider' ? 'api' : '',useG1Credits:mode === 'paid'}}}}));
  }
 }
 `, { mode: 0o755 })
@@ -44,6 +44,36 @@ describe.skipIf(process.platform === 'win32')('Antigravity read-only subscriptio
     const f = fixture(mode)
     expect(await readAgProbe(f.executable, 'configuration', f.options)).toContain('customModelsConfig')
     expect(f.calls()).toHaveLength(2)
+  })
+  for (const mode of ['once', 'stubborn']) it(`retries model discovery only after the ${mode} process exits`, async () => {
+    const f = fixture(mode)
+    expect(await readAgProbe(f.executable, 'models', f.options)).toContain('gemini-test')
+    expect(f.calls().map(call => call.args)).toEqual([['models'], ['models']])
+  })
+  it('does not retry model discovery exits and bounds repeated timeouts', async () => {
+    for (const mode of ['exit', 'always']) {
+      const f = fixture(mode)
+      await expect(readAgProbe(f.executable, 'models', f.options)).rejects.toThrow(mode === 'exit' ? 'reason=exit, attempt=1' : 'reason=timeout, attempt=2')
+      expect(f.calls()).toHaveLength(mode === 'exit' ? 1 : 2)
+    }
+  })
+  it('joins cancelled model discovery without retrying', async () => {
+    const f = fixture('always')
+    const pending = readAgProbe(f.executable, 'models', { ...f.options, timeoutMs: 3000 })
+    for (let attempt = 0; attempt < 200 && !f.ready(); attempt++) await new Promise(resolve => setTimeout(resolve, 10))
+    expect(f.ready()).toBe(true)
+    f.controller.abort()
+    await expect(pending).rejects.toThrow('reason=cancelled')
+    expect(f.calls()).toHaveLength(1)
+    expect(() => process.kill(f.calls()[0]!.pid, 0)).toThrow()
+  })
+  it('uses the bounded discovery probe after account validation and coalesces callers', async () => {
+    const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
+    Object.assign(runtime.childEnv, f.env)
+    try {
+      expect(await Promise.all([runtime.availableModels(), runtime.availableModels()])).toEqual([['gemini-test'], ['gemini-test']])
+      expect(f.calls().map(call => call.args[0])).toEqual(['--version', '-p', 'models'])
+    } finally { await runtime.close() }
   })
   it('stops after two timeouts with classified output-free diagnostics', async () => {
     const f = fixture('always')

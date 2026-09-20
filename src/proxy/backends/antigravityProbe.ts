@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { signalAgProcess } from './antigravityProcess'
 
-type Probe = 'version' | 'configuration'
+type Probe = 'version' | 'configuration' | 'models'
 type Failure = 'timeout' | 'cancelled' | 'spawn' | 'exit' | 'output-limit'
 interface ProbeOptions {
   env: NodeJS.ProcessEnv
@@ -17,12 +17,12 @@ class ProbeFailure extends Error {
 
 /** Read-only official commands only. Never retry model generation or print CLI output. */
 export async function readAgProbe(executable: string, kind: Probe, options: ProbeOptions): Promise<string> {
-  const attempts = kind === 'configuration' ? 2 : 1
+  const attempts = kind === 'version' ? 1 : 2
   for (let attempt = 1; ; attempt++) {
     try { return await probeOnce(executable, kind, options, attempt) }
     catch (error) {
       if (!(error instanceof ProbeFailure) || error.reason !== 'timeout' || attempt >= attempts || options.signal.aborted) throw error
-      console.warn(`[antigravity] ${error.message}; retrying the read-only configuration check once`)
+      console.warn(`[antigravity] ${error.message}; retrying the read-only ${kind === 'models' ? 'model discovery' : 'configuration check'} once`)
       await delay(250, undefined, { signal: options.signal })
     }
   }
@@ -33,7 +33,7 @@ function probeOnce(executable: string, kind: Probe, options: ProbeOptions, attem
   const timeoutMs = options.timeoutMs ?? 20_000
   if (options.signal.aborted) return Promise.reject(new ProbeFailure('cancelled', 'Antigravity account check cancelled; no model request was sent'))
   return new Promise((resolve, reject) => {
-    const args = kind === 'version' ? ['--version'] : ['-p', '/config', '--output-format', 'json']
+    const args = kind === 'version' ? ['--version'] : kind === 'models' ? ['models'] : ['-p', '/config', '--output-format', 'json']
     const child = spawn(executable, args, { env: options.env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true })
     let failure: Failure | undefined
     let killTimer: ReturnType<typeof setTimeout> | undefined
@@ -67,7 +67,7 @@ function probeOnce(executable: string, kind: Probe, options: ProbeOptions, attem
       options.signal.removeEventListener('abort', cancel)
       if (failure || code !== 0) {
         const reason = failure ?? 'exit'
-        reject(new ProbeFailure(reason, `Antigravity ${kind === 'version' ? 'version' : 'subscription configuration'} check failed (reason=${reason}, attempt=${attempt}, elapsedMs=${Date.now() - started}, deadlineMs=${timeoutMs}, exit=${code}, signal=${signal}, outputBytes=${bytes}); no model request was sent`))
+        reject(new ProbeFailure(reason, `Antigravity ${kind === 'version' ? 'version' : kind === 'models' ? 'model discovery' : 'subscription configuration'} check failed (reason=${reason}, attempt=${attempt}, elapsedMs=${Date.now() - started}, deadlineMs=${timeoutMs}, exit=${code}, signal=${signal}, outputBytes=${bytes}); no model request was sent`))
       } else resolve(Buffer.concat(output).toString('utf8'))
     })
   })

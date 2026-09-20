@@ -540,9 +540,8 @@ export class AntigravityRuntime {
     if (Date.now() - this.checkedAt < 60_000) return this.models
     this.checking ??= (async () => {
       await this.verifyAccount()
-      const opts = { env: this.childEnv, timeout: 20_000, maxBuffer: 1024 * 1024, signal: this.shutdown.signal }
-      const result = await exec(this.executable, ["models"], opts)
-      const models = result.stdout.split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]!).filter(Boolean)
+      const output = await readAgProbe(this.executable, "models", { env: this.childEnv, signal: this.shutdown.signal })
+      const models = output.split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]!).filter(Boolean)
       if (!models.length) throw new Error("No account models available; sign in using agy")
       this.models = models; this.checkedAt = Date.now(); return models
     })().finally(() => { this.checking = undefined })

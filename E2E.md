@@ -5850,3 +5850,63 @@ nine checks / 17 requests with zero HTTP errors on OpenCode 1.18.31, official
 agy 1.2.7, Gemini 3.8 Flash low, macOS arm64 and Node 22.22.3. The report records
 `incrementalTextVisible: true`, `cacheOnlyRecovery: true`, and zero tool executions
 before the disconnect. Final text exactly matched the unique marker.
+
+## Installed Antigravity client setup
+
+```sh
+npm run build
+E2E_AGY_SETUP=1 E2E_CLIENT=pi E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_SETUP=1 E2E_CLIENT=opencode E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_AGY_TEXT_STREAM=1 node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+This removes the fixture provider, invokes the built `meridian setup --antigravity`
+CLI, and relies on the client's normal extension/plugin discovery. Pi does not get
+an explicit retry `-e` argument and OpenCode does not receive a fixture-copied retry
+plugin. The existing client tool/approval/question/delivery recovery gates then run.
+`E2E_MERIDIAN_CLI` can select an extracted npm package's `dist/cli.js`, verifying
+that the installer resolves bundled integrations without an `examples` directory.
+The local package fixture uses the extracted npm payload with a symlink to the
+existing dependency installation; it does not claim a fresh registry install.
+
+**Verified setup, 2026-09-20:** Pi artifact
+`meridian-agy-pi-extensions-3FHEe4` passed nine checks / 15 requests; OpenCode
+`meridian-agy-opencode-extensions-bxoeu9` passed ten / 17. Both used normal client
+discovery of the installed integrations with zero HTTP errors. Pi's first
+configuration probe timed out at 21,012 ms (SIGKILL, zero output); OpenCode's
+at 20,103 ms (exit 1, 244 bytes). The existing bounded read-only retries recovered.
+No configuration contents were retained and the underlying CLI cause is unknown.
+
+The extracted npm package (no `examples` directory) also passed OpenCode's ten
+checks / 17 requests in `meridian-agy-opencode-extensions-h0Hflx`, including
+streaming and cache-only recovery. The first extracted-package Pi attempt,
+`meridian-agy-pi-extensions-xEZLru`, failed before setup during server startup:
+`agy models` exceeded its 20-second deadline (`killed: true`, exit 1, empty stdout;
+stderr only “Fetching available models...”). This is retained as a separate
+model-discovery failure, not a failed client configuration or passing setup gate.
+
+Model discovery now uses the same bounded official-probe helper as configuration:
+one timeout-only retry, joined termination, cancellation and output-free diagnostic
+metadata. Nineteen focused probe tests pass, including new discovery timeout,
+forced-kill, cancellation, no-retry exit and runtime coalescing cases. Set
+`E2E_AGY_MODELS_TIMEOUT=1` to withhold the first official model-list response until
+the production deadline, then require a fresh successful list before generation.
+`E2E_MERIDIAN_SERVER` selects an extracted package's server entry as well as its CLI.
+
+**Extracted package verification, 2026-09-20:** Pi
+`meridian-agy-pi-extensions-Mcl37F` passed ten checks / 15 requests with
+zero HTTP errors using both the packaged CLI and packaged server. The first
+official model-list response was withheld until the 20-second production
+deadline; a fresh successful probe preceded generation. Normal extension
+discovery, partial-tool recovery, approval/denial, questions, dynamic tools and
+delayed approval all passed.
+
+The corresponding OpenCode package run
+`meridian-agy-opencode-extensions-F2biN0` completed setup, then failed before its
+first permission prompt. Its first configuration probe timed out at 21,013 ms
+(SIGKILL, 2,173 output bytes); the bounded second attempt exited 1 at 12,460 ms
+(386 bytes), producing HTTP 503 with no model request sent for that attempt.
+Further configuration timeouts preceded the harness timeout. Output contents
+were not retained; the CLI cause remains unclassified. This run overlapped the
+Pi gate and full local suite. A separate OpenCode run tests the same extracted
+package without another live client; success there cannot establish a fix for
+this CLI failure.

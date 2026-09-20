@@ -10,8 +10,9 @@ import { createServer } from 'node:http'
 import { Readable } from 'node:stream'
 import { once } from 'node:events'
 import { preflightFault } from './lib-antigravity-preflight-fault.mjs'
-import { startProxyServer } from '../dist/server.js'
+const { startProxyServer } = await import(process.env.E2E_MERIDIAN_SERVER || '../dist/server.js')
 
+const installedSetup = process.env.E2E_AGY_SETUP === '1'
 const lostTool = process.env.E2E_AGY_LOST_TOOL === '1'
 const textStream = process.env.E2E_AGY_TEXT_STREAM === '1'
 let textPrefixSent = false, releaseText
@@ -40,7 +41,7 @@ let executable = process.env.MERIDIAN_AGY_PATH || 'agy'
 const version = bin => { const r = spawnSync(bin, ['--version'], { encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return (r.stdout || r.stderr).trim() }
 const root = await mkdtemp(join(tmpdir(), `meridian-agy-${client}-extensions-`))
 console.log(`Artifacts: ${root}`)
-const probeFault = process.env.E2E_AGY_PREFLIGHT_TIMEOUT === '1' ? await preflightFault(root, executable) : undefined
+const probeFault = process.env.E2E_AGY_MODELS_TIMEOUT === '1' ? await preflightFault(root, executable, 'models') : process.env.E2E_AGY_PREFLIGHT_TIMEOUT === '1' ? await preflightFault(root, executable) : undefined
 if (probeFault) executable = probeFault.executable
 const config = join(root, 'config'), project = join(root, 'project'), auditPath = join(root, 'audit.jsonl')
 await mkdir(config); await mkdir(project); await writeFile(auditPath, '')
@@ -49,7 +50,7 @@ const receipt = `CLIENT_${randomUUID()}`
 const env = { ...process.env }
 for (const key of Object.keys(env)) if (/^(OPENCODE_|MERIDIAN_|CLAUDE_PROXY_|ANTHROPIC_|CLAUDE_|GEMINI_API_KEY|GOOGLE_API_KEY)/.test(key)) delete env[key]
 env.MERIDIAN_EXTENSION_AUDIT = auditPath; env.MERIDIAN_EXTENSION_RECEIPT = receipt
-const report = { disconnect, lostAnswer, lostTool, cancelTool, partialTool, textStream, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
+const report = { disconnect, lostAnswer, lostTool, cancelTool, partialTool, textStream, installedSetup, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
 const requests = [], events = [], apiLog = [], httpErrors = []
 let eventAbort, eventTask
 let proxy, relay, child, exited = false, stdout = '', stderr = ''
@@ -191,11 +192,23 @@ try {
     assert.equal((await response.json()).pendingToolProcesses, 0, 'Pending CLI owner must expire before approval')
     assert.equal((await audit()).filter(e => e.event === 'executed').length, 1, 'Waiting for approval must not execute the client tool')
   }
+  async function configureInstalledClient() {
+    // Remove the fixture provider: the installed CLI must create it itself.
+    const path = join(config, client === 'pi' ? 'models.json' : 'opencode.json')
+    const existing = JSON.parse(await readFile(path, 'utf8'))
+    delete existing[client === 'pi' ? 'providers' : 'provider']
+    await writeFile(path, JSON.stringify(existing))
+    const result = spawnSync(process.execPath, [process.env.E2E_MERIDIAN_CLI || fileURLToPath(new URL('../dist/cli.js', import.meta.url)), 'setup', '--antigravity', '--client', client, '--url', baseUrl, '--model', modelID, '--config-dir', config, '--set-default'], { env, encoding: 'utf8', timeout: 30000 })
+    await writeFile(join(root, 'setup.log'), result.stdout + result.stderr)
+    assert.equal(result.status, 0, result.stderr)
+    mark(`Installed CLI configures ${client} provider and bundled integration`)
+  }
   if (client === 'pi') {
     env.PI_CODING_AGENT_DIR = config; env.PI_OFFLINE = '1'; env.PI_TELEMETRY = '0'
     await writeFile(join(config, 'models.json'), JSON.stringify({ providers: { 'meridian-agy': { baseUrl, apiKey: 'fixture', api: 'anthropic-messages', models: [{ id: modelID, name: modelID, reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }))
     await writeFile(join(config, 'settings.json'), JSON.stringify({ retry: { enabled: partialTool, maxRetries: 2, baseDelayMs: 500 }, compaction: { enabled: false } }))
-    launch(['--provider', 'meridian-agy', '--model', modelID, '--thinking', 'off', '--mode', 'rpc', '--no-session', '--no-builtin-tools', '--no-extensions', '-e', fileURLToPath(new URL('./fixtures/agy-pi-extension.js', import.meta.url)), ...(lostTool ? ['-e', fileURLToPath(new URL('../examples/pi-extension/antigravity-retry.js', import.meta.url))] : []), '--no-skills', '--no-context-files', '--no-prompt-templates', '--no-themes'])
+    if (installedSetup) await configureInstalledClient()
+    launch(['--provider', 'meridian-agy', '--model', modelID, '--thinking', 'off', '--mode', 'rpc', '--no-session', '--no-builtin-tools', ...(installedSetup ? [] : ['--no-extensions']), '-e', fileURLToPath(new URL('./fixtures/agy-pi-extension.js', import.meta.url)), ...(lostTool && !installedSetup ? ['-e', fileURLToPath(new URL('../examples/pi-extension/antigravity-retry.js', import.meta.url))] : []), '--no-skills', '--no-context-files', '--no-prompt-templates', '--no-themes'])
     let buffer = ''
     child.stdout.on('data', value => {
       buffer += value
@@ -264,8 +277,9 @@ try {
     env.OPENCODE_CONFIG_DIR = config; env.OPENCODE_DISABLE_AUTOUPDATE = '1'; env.OPENCODE_SERVER_PASSWORD = randomUUID()
     await mkdir(join(config, 'plugins'))
     await copyFile(new URL('./fixtures/agy-opencode-plugin.js', import.meta.url), join(config, 'plugins', 'fixture.js'))
-    if (lostTool) await copyFile(new URL('../examples/opencode-plugin/antigravity-retry.js', import.meta.url), join(config, 'plugins', 'retry.js'))
+    if (lostTool && !installedSetup) await copyFile(new URL('../examples/opencode-plugin/antigravity-retry.js', import.meta.url), join(config, 'plugins', 'retry.js'))
     await writeFile(join(config, 'opencode.json'), JSON.stringify({ model: `meridian-agy/${modelID}`, small_model: `meridian-agy/${modelID}`, enabled_providers: ['meridian-agy'], share: 'disabled', permission: { '*': 'deny', question: 'allow', client_receipt: 'ask', client_denied: 'ask', client_blocked: 'allow' }, provider: { 'meridian-agy': { npm: '@ai-sdk/anthropic', options: { baseURL: baseUrl + '/v1', apiKey: 'fixture' }, models: { [modelID]: { name: modelID, limit: { context: 128000, output: 4096 }, temperature: false, reasoning: false, tool_call: true } } } } }))
+    if (installedSetup) await configureInstalledClient()
     launch(['serve', '--hostname', '127.0.0.1', '--port', '0'])
     const server = await until(() => /http:\/\/127\.0\.0\.1:\d+/.exec(stdout)?.[0], 'OpenCode server', 30000)
     async function api(path, body) {
@@ -377,12 +391,12 @@ try {
   assert(results.some(r => r.is_error), 'Denial must enter as a client tool error')
   if (probeFault) {
     const attempts = (await readFile(probeFault.audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
-    assert.equal(attempts.filter(event => event.event === 'config-stall-start').length, 1)
-    const verified = attempts.findIndex(event => event.event === 'config-forwarded' && event.code === 0)
+    assert.equal(attempts.filter(event => event.event === `${probeFault.kind}-stall-start`).length, 1)
+    const verified = attempts.findIndex(event => event.event === `${probeFault.kind}-forwarded` && event.code === 0)
     const model = attempts.findIndex(event => event.event === 'model-start')
-    assert(verified > 0 && model > verified, 'A fresh official configuration check must succeed before generation')
+    assert(verified > 0 && model > verified, 'A fresh official read-only probe must succeed before generation')
     report.preflightAttempts = attempts
-    mark('official configuration timeout recovers before any client generation')
+    mark(`official ${probeFault.kind} timeout recovers before any client generation`)
   }
   if (cancelTool) { assert(delayedTelemetry && report.cancelledToolStream); mark('Upstream tool delivery cancelled during telemetry; saved call and client results still recover') }
   if (partialTool) {

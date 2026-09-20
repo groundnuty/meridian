@@ -41,14 +41,14 @@ profiles remain specific to Claude.
 When running from a checkout, replace `meridian` with `node dist/cli.js` after
 `npm install` and `npm run build`.
 
-## Configuration-check timeout recovery
+## Read-only CLI timeout recovery
 
 Before generation, Meridian verifies the official CLI version and its current
 subscription configuration. Simultaneous checks in one runtime share the same
 in-flight check; later requests validate again. Version validation precedes the
 configuration command.
 
-A `/config` probe has a 20-second deadline. If it times out, Meridian terminates
+Both `/config` and `agy models` discovery probes have a 20-second deadline. If either times out, Meridian terminates
 and joins it (forcing termination after one second if needed), waits 250 ms, and
 retries that read-only command once. Generation still requires a successful,
 validated configuration response. Both attempts timing out returns an explicit
@@ -328,6 +328,42 @@ through MCP. Native delegation is independently gated below.
 These examples use standalone Antigravity on port 3457. For a combined service,
 use its port and prepend `/antigravity` to each base URL. If Meridian API-key
 protection is configured, replace `local-placeholder` with that local key.
+
+### Configure installed clients
+
+The npm/Nix/Docker build includes both retry integrations; a source checkout is
+not required. With your official CLI signed in and Meridian running with the
+Antigravity tool bridge enabled, add your account model to either client:
+
+```sh
+meridian setup --antigravity --client pi --url http://127.0.0.1:3457 --model gemini-3.8-flash-low
+meridian setup --antigravity --client opencode --url http://127.0.0.1:3457 --model gemini-3.8-flash-low
+```
+
+For combined mode use `--url http://127.0.0.1:3456/antigravity`. Restart the client
+after setup. Pi loads its integration from the client `extensions` directory;
+OpenCode V1 loads it from `plugins`. This installs the supported retry/streaming
+behavior as well as the provider configuration. OpenCode V2 is not targeted by
+this command. Replace the example model with an actual account model slug.
+
+Existing providers, permissions and client defaults remain intact. Add
+`--set-default` to select the new provider/model (and OpenCode's `small_model`).
+`--config-dir <directory>` targets a specific client installation. Otherwise Pi
+uses `PI_CODING_AGENT_DIR` or `~/.pi/agent`, and OpenCode uses its configured
+platform directory. `--api-key-env MERIDIAN_API_KEY` writes an environment
+reference for local Meridian authentication; it never copies Google credentials.
+Without that flag, an existing local key is retained or a placeholder is used.
+
+Setup validates all intended configuration before writing, preserves OpenCode
+JSONC comments, creates private `.bak-<id>` backups for replaced files, and uses
+atomic per-file replacement. Rerunning unchanged setup makes no edits. Malformed
+configuration, conflicting sibling providers, explicit provider exclusions,
+unmanaged destination scripts and known duplicate retry scripts are rejected.
+Remove an old manually installed retry script before installing the managed one.
+Client tool permissions remain under the client's control. Pi's existing automatic
+retry preference is preserved; enable it for Pi partial-stream recovery.
+
+The following manual configuration remains available for custom installations.
 
 Pi's `~/.pi/agent/models.json`:
 

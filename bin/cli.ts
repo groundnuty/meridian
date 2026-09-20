@@ -26,11 +26,18 @@ Usage: meridian [command] [options]
 Commands:
   (default)        Start the proxy server
   status           Show what a running instance is doing (the / page, in the terminal)
-  setup            Configure the OpenCode plugin (run once after install)
+  setup            Configure client integrations (run once after install)
   profile          Manage Claude account profiles (add, list, switch, remove)
   refresh-token    Refresh the Claude Code OAuth token
 
 Setup options:
+  --antigravity                Configure Pi or OpenCode V1 for Antigravity
+  --client <pi|opencode>       Client to configure with --antigravity
+  --url <base URL>             Antigravity URL (include /antigravity in combined mode)
+  --model <account slug>      Account model to add
+  --config-dir <directory>    Optional client configuration directory
+  --api-key-env <variable>    Reference a local Meridian API key from the environment
+  --set-default              Also select Antigravity for the client
   --v1                         Install the OpenCode V1 plugin
   --v2                         Install the pinned OpenCode V2 beta plugin
   --opencode-bin <executable>  Probe this OpenCode executable
@@ -83,6 +90,22 @@ if (args[0] === "profile") {
   else if (subcommand === "login" && profileId) await profileLogin(profileId, { headless })
   else profileHelp()
   process.exit(0)
+}
+
+if (args[0] === "setup" && args.includes("--antigravity")) {
+  const { parseAntigravitySetupArgs, setupAntigravityClient } = await import("../src/proxy/antigravitySetup")
+  try {
+    const result = setupAntigravityClient(parseAntigravitySetupArgs(args.slice(1)), import.meta.url)
+    console.log(`${result.changed.length ? "Configured" : "Already configured"} ${result.client} for Antigravity`)
+    console.log(`  Config: ${result.configPath}`)
+    console.log(`  Integration: ${result.integrationPath}`)
+    for (const backup of result.backups) console.log(`  Backup: ${backup}`)
+    console.log(`Restart ${result.client}, then select meridian-agy/${result.model}. Tool permissions remain in the client.`)
+    process.exit(0)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  }
 }
 
 if (args[0] === "setup") {
