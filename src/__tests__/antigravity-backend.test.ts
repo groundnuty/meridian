@@ -223,7 +223,7 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     const answer = await decode(await send(followup))
     expect(answer.content[0]!.text).toBe("FAILED:client-secret")
     expect(answer.usage.input_tokens).toBe(120) // Not the earlier 100-token tool request.
-    expect((await send(followup)).status).toBe(409) // No duplicate execution.
+    expect(await decode(await send(followup))).toEqual(answer) // Saved answer, no duplicate execution.
     expect((await send({ ...followup, tool_choice: { type: "none" }, messages: [...followup.messages, { role: "user", content: "A new user turn with completed context" }] })).status).toBe(200)
   })
   it("preserves UTF-8 tool arguments split across MCP network chunks", async () => {
@@ -276,7 +276,7 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     const answer = await decode(await send(next))
     expect(answer.content[0]!.text).toBe("value0|value1")
     expect(runtime.completed).toBe(1)
-    expect((await send(next)).status).toBe(409)
+    expect(await decode(await send(next))).toEqual(answer)
   })
   for (const mode of ['MCP_BATCH', 'MCP_SESSIONS']) it(`${mode}: atomically validates and independently correlates two actions`, async () => {
     const { send } = fixture()
@@ -346,7 +346,7 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     const response = await replacement.send(continuation)
     expect(response.status).toBe(200)
     expect((await decode(response)).content).toEqual([{ type: "text", text: "FAILED:after-restart" }])
-    expect((await replacement.send(continuation)).status).toBe(409)
+    expect((await replacement.send(continuation)).headers.get("x-meridian-response-replayed")).toBe("true")
     expect((await replacement.send({ ...request, messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "unknown", content: "orphan" }] }] })).status).toBe(400)
   })
   it("claims a recovered result before preflight and releases the claim on refusal", async () => {
@@ -588,7 +588,7 @@ describe("Antigravity client plugin context changes", () => {
     expect(old.child?.exitCode !== null || old.child?.signalCode !== null).toBe(true)
     expect(runtime.requests.at(0)?.continuation).toBe("client-context-replay")
     expect(runtime.hasConsumedTool(id)).toBe(true)
-    expect((await send(updated)).status).toBe(409)
+    expect((await send(updated)).headers.get("x-meridian-response-replayed")).toBe("true")
   })
   it("claims a plugin replay before asynchronous teardown and releases the claim on preflight failure", async () => {
     const { send, runtime } = fixture({ reuseConversations: true })
@@ -613,7 +613,7 @@ describe("Antigravity client plugin context changes", () => {
     expect(runtime.hasConsumedTool(id)).toBe(false)
     runtime.verifyAccount = original
     expect((await decode(await send(updated))).content[0]?.text).toBe("ONCE")
-    expect((await send(updated)).status).toBe(409)
+    expect((await send(updated)).headers.get("x-meridian-response-replayed")).toBe("true")
   })
   it("does not relax pending model or history identity when a plugin changes context", async () => {
     const { send, runtime } = fixture()
@@ -661,7 +661,9 @@ describe("Antigravity interrupted tool-result continuations", () => {
     expect(retry.status).toBe(200)
     expect((await decode(retry)).content[0]?.text).toBe("COMPLETED_ONCE")
     expect(runtime.canRetryContinuation(parsed)).toBe(false)
-    expect((await send(continuation)).status).toBe(409)
+    const saved = await send({ ...continuation, stream: false })
+    expect(saved.headers.get("x-meridian-response-replayed")).toBe("true")
+    expect((await decode(saved)).content[0]?.text).toBe("COMPLETED_ONCE")
   })
   it("waits for cancellation cleanup and admits only one simultaneous exact retry", async () => {
     const { send, runtime } = fixture()

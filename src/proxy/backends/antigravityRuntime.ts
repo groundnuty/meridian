@@ -348,6 +348,7 @@ export class AntigravityRun {
   }
   private async cleanupOnce(): Promise<void> {
     clearTimeout(this.timer); clearTimeout(this.pendingTimer); clearTimeout(this.killTimer)
+    this.runtime.settling.add(this.settled)
     this.runtime.runs.delete(this.id)
     if (this.workspace) {
       try {
@@ -366,11 +367,15 @@ export class AntigravityRun {
     try { if (this.workspace && !retained) await rm(this.workspace, { recursive: true, force: true }) }
     catch (error) { console.error("[antigravity] Temporary workspace cleanup failed:", String(error)) }
     if (this.workspace) try { this.runtime.nativeSessions?.release(this.workspace) } catch (error) { this.stateFailure(error) }
+    this.runtime.settling.delete(this.settled)
     this.settledResolve()
   }
 }
 
 export class AntigravityRuntime {
+  // Exited processes leave admission maps before asynchronous workspace cleanup.
+  // Keep joining them before the backend closes the shared state database.
+  readonly settling = new Set<Promise<void>>()
   readonly executable: string
   readonly turnTimeoutMs: number
   readonly pendingToolTimeoutMs: number
@@ -656,7 +661,7 @@ export class AntigravityRuntime {
     await Promise.allSettled([this.initialization, this.statusRefresh, this.quotaCheck, this.verifying, this.checking])
     const runs = [...this.runs.values()]
     for (const run of runs) run.abort(new AntigravityError("Antigravity backend stopped", 503, "api_error"), run.active ? "failed" : "retired")
-    await Promise.all(runs.map(run => run.settled))
+    await Promise.all([...runs.map(run => run.settled), ...this.settling])
     if (this.server) {
       const stopped = new Promise<void>((resolve, reject) => this.server!.close(error => error && "code" in error && error.code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve()))
       this.server.closeAllConnections()

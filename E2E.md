@@ -363,6 +363,46 @@ gate observes the owned CLI lifecycle, not a proof about undocumented remote
 provider work cancellation. Preserve the earlier unclassified health failure
 above; these newer successes do not identify its cause.
 
+### Completed-answer transport-loss gate
+
+```sh
+E2E_AGY_LOST_ANSWER=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_LOST_ANSWER=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+Unlike the interrupted-continuation gate, this relay consumes the entire upstream
+answer through `message_stop`, then closes the connection without delivering it.
+Both clients must automatically retry and receive a response marked
+`x-meridian-response-replayed: true` with identical message ID, text, stop fields
+and usage. The client action audit must still contain one execution; every HTTP
+error fails the gate. The saved-answer path returns before CLI selection and
+usage accounting; direct tests also disable CLI preflight during restart recovery
+and require no repeated response hooks or usage records.
+
+**Verified 2026-09-19:** actual macOS arm64, Node 22.22.3, agy 1.2.7,
+Gemini 3.8 Flash Low, Pi 0.72.1 and OpenCode 1.18.31. Pi artifact
+`meridian-agy-pi-extensions-Q7EbtX` passed eight checks / 15 requests; OpenCode
+`meridian-agy-opencode-extensions-PLXAET` passed eight / 13. Both recorded zero
+HTTP errors and exited successfully after owned-process cleanup. Pi encountered
+a natural first-attempt configuration timeout (21,014 ms including force-kill
+join, SIGKILL, zero output bytes); the existing bounded read-only retry recovered
+it. This does not establish the underlying agy stall's cause.
+
+Initial direct restart checks passed assertions but logged `Workspace retention
+failed: Antigravity state is closed`. Exited runs were removed from admission maps
+before asynchronous cleanup finished, allowing shutdown to close SQLite early.
+Runtime shutdown now also joins those cleanup promises. Corrected direct tests
+run without that warning; the subsequent OpenCode gate used the rebuilt cleanup
+fix. New regression coverage includes exact identity/credential isolation,
+JSON/SSE and Unicode reconstruction, count/byte/expiry bounds, durable restart,
+no duplicate hooks/usage, state-close ordering and OpenAI `store: false` exclusion.
+The final local suite passed 4,693 tests with zero failures across 15 isolated
+groups; typecheck and the Node server build passed.
+
+This gate covers saved terminal text answers to Anthropic tool-result turns.
+Responses issuing another tool call, native browser/subagent grants, ordinary
+prompt retries and expired/evicted/oversized snapshots remain outside this path.
+
 ## Quick Start
 
 ```bash

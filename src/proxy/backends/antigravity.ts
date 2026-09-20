@@ -1,3 +1,4 @@
+import { AgCompletedAnswers, replayAgAnswer } from "./antigravityReplay"
 import { AgResponseJobs, agEventStream, responseEvents } from "./antigravityJobs"
 import { estimateAgTokens } from "./antigravityTokens"
 import { agOpenai } from "./antigravityOpenai"
@@ -38,6 +39,7 @@ async function readBody(request: Request): Promise<unknown> {
 export function createAntigravityServer(config: ProxyConfig, runtime = new AntigravityRuntime({ ...config.antigravity, maxConcurrent: config.antigravity?.maxConcurrent ?? config.maxConcurrent })): ProxyServer & { closeBackend(): Promise<void>; providerStatus(): Promise<ProviderUsage> } {
   if (config.profiles?.length || config.defaultProfile) throw new Error("Antigravity does not support Claude profile configuration")
   const responses = new AgResponseStore(undefined, undefined, runtime.state)
+  const completedAnswers = new AgCompletedAnswers(runtime.state)
   const responseJobs = new AgResponseJobs(responses)
   async function recoverResults(body: AgRequest, signal: AbortSignal, results: AgResult[], previous?: AntigravityRun): Promise<AntigravityRun> {
     // Claim before retiring the old owner: simultaneous HTTP retries must not
@@ -106,11 +108,20 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     return recoverResults(body, signal, continuationResults)
   }
 
-  async function messages(request: Request): Promise<Response> {
+  async function messages(request: Request, saveCompletedAnswers = true): Promise<Response> {
     if (runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (request.headers.has("x-meridian-profile")) throw new AntigravityError("Antigravity uses the current agy account; Claude profile routing is unavailable")
     const body = parseAgRequest(await runtime.plugins.request(await readBody(request), request.signal), runtime.options.adaptThinkingBudgets)
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
+    const adaptationHeaders: Record<string, string> = runtime.options.adaptThinkingBudgets ? {
+      "x-meridian-thinking-budgets": "approximate-effort",
+      "x-meridian-effective-model": body.model,
+      ...(body.output_config?.effort ? { "x-meridian-effective-effort": body.output_config.effort } : {}),
+    } : {}
+    const scope = agResponseScope(request.headers)
+    const canSaveAnswer = saveCompletedAnswers && !runtime.options.allowNativeBrowser && !runtime.options.allowNativeSubagents
+    const saved = canSaveAnswer ? completedAnswers.get(body, scope) : undefined
+    if (saved) return replayAgAnswer(saved, body.stream === true, adaptationHeaders)
     const run = await selectRun(body, request.signal)
     let completed = false
     const cancel = () => { if (!completed) run.abort(new AntigravityError("Request cancelled", 499, "api_error")) }
@@ -176,9 +187,12 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         if (forcedAgTool(body) && reason !== "tool_use") throw new AntigravityError("Antigravity completed without the required tool call", 502, "api_error")
         if (reason === "end_turn") { run.history = [...run.history, { role: "assistant", content }]; run.rememberCompleted() }
         await runtime.plugins.observe("onResponse", { ...base, content, stop_reason: reason, usage }, request.signal)
+        const answer = { ...base, content, stop_reason: reason, stop_sequence: stops.matched ?? null, usage }
+        const textContent = content.filter(block => block.type === "text")
+        if (canSaveAnswer && !emittedTool && textContent.length === content.length) completedAnswers.put(body, scope, { ...answer, content: textContent })
         emit?.("message_delta", { type: "message_delta", delta: { stop_reason: reason, stop_sequence: stops.matched ?? null }, usage })
         emit?.("message_stop", { type: "message_stop" })
-        return { ...base, content, stop_reason: reason, stop_sequence: stops.matched ?? null, usage }
+        return answer
       } catch (error) {
         status = error instanceof AntigravityError ? error.status : 502
         failure = error instanceof Error ? error.message : String(error)
@@ -200,11 +214,6 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         request.signal.removeEventListener("abort", cancel)
       }
     }
-    const adaptationHeaders: Record<string, string> = runtime.options.adaptThinkingBudgets ? {
-      "x-meridian-thinking-budgets": "approximate-effort",
-      "x-meridian-effective-model": body.model,
-      ...(body.output_config?.effort ? { "x-meridian-effective-effort": body.output_config.effort } : {}),
-    } : {}
     if (!body.stream) return Response.json(await consume(), { headers: adaptationHeaders })
     let cancelled = false
     const encoder = new TextEncoder()
@@ -280,7 +289,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         return Response.json({ object: "list", data: models.map(id => ({ id, type: "model", object: "model", display_name: id, owned_by: "antigravity" })), has_more: false, first_id: models[0], last_id: models.at(-1) })
       }
       if (request.method === "POST" && path === "/v1/messages/count_tokens") return Response.json(estimateAgTokens(parseAgRequest(await readBody(request), runtime.options.adaptThinkingBudgets)), { headers: { "x-meridian-token-count": "estimate" } })
-      if (request.method === "POST" && path === "/v1/responses/input_tokens") return await agOpenai(request, await readBody(request), true, messages, responses, responseJobs, { countTokens: true })
+      if (request.method === "POST" && path === "/v1/responses/input_tokens") return await agOpenai(request, await readBody(request), true, request => messages(request, false), responses, responseJobs, { countTokens: true })
       const storedResponse = /^\/v1\/responses\/(resp_agy_[a-f0-9]{32})(?:\/(input_items|cancel))?$/.exec(path)
       if (storedResponse) {
         const id = storedResponse[1]!, operation = storedResponse[2]
@@ -316,7 +325,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           return Response.json(current.response, { headers: { 'cache-control': 'no-store' } })
         }
       }
-      if (request.method === "POST" && ["/v1/chat/completions", "/v1/responses"].includes(path)) return await agOpenai(request, await readBody(request), path === "/v1/responses", messages, responses, responseJobs)
+      if (request.method === "POST" && ["/v1/chat/completions", "/v1/responses"].includes(path)) return await agOpenai(request, await readBody(request), path === "/v1/responses", request => messages(request, false), responses, responseJobs)
       if (request.method === "POST" && ["/v1/messages", "/messages"].includes(path)) return await messages(request)
       return errorResponse(new AntigravityError("Endpoint unavailable on the Antigravity backend", 404, "not_found_error"))
     } catch (error) { return errorResponse(error) }
@@ -327,6 +336,6 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     beginDrain: () => { runtime.draining = true },
     forceAbortInFlight: () => { for (const run of runtime.runs.values()) run.abort(new Error("Backend shutting down")) },
     getInFlightCount: () => [...runtime.runs.values()].filter(run => run.active).length,
-    closeBackend: async () => { try { await responseJobs.close(); await runtime.close() } finally { responses.clear(); runtime.state?.close() } },
+    closeBackend: async () => { try { await responseJobs.close(); await runtime.close() } finally { responses.clear(); completedAnswers.clear(); runtime.state?.close() } },
   }
 }

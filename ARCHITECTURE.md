@@ -38,7 +38,12 @@ are never retried or replaced with cached authorization.
 them into the common media pipeline. `antigravityResponses.ts` holds bounded,
 credential-scoped Responses snapshots with one oldest-first count/byte ledger
 across volatile payloads and durable metadata (rebuilt from SQLite on startup); `antigravityJobs.ts` owns background
-cancellation and bounded event replay. Optional `antigravityState.ts` persists
+cancellation and bounded event replay. `antigravityReplay.ts` saves terminal text
+answers to exact Anthropic tool-result continuations in a separate credential-scoped
+budget (128 entries, 16 MiB total, 1 MiB each, 30 minutes). Snapshots are saved
+before terminal delivery and replay as JSON or lazily generated SSE without model,
+response-hook or usage accounting duplication. Ordinary prompts, new tool calls,
+native-capability requests and OpenAI routes do not use this cache. Optional `antigravityState.ts` persists
 Meridian-owned records in private SQLite with an exclusive lifetime owner guard.
 `antigravitySessions.ts` atomically claims exact completed/joined text/client-tool
 native mappings and uses the public CLI conversation flag. In-flight processes
@@ -83,14 +88,15 @@ processes replay full client history unless an eligible completed/joined mapping
 is restored through the public CLI conversation flag. A complete tool-call/result
 request without a live owner also replays,
 allowing recovery after expiry or process restart without an extra user message.
-A bounded set of consumed tool IDs rejects recent duplicate results; a transient
+A bounded set of consumed tool IDs rejects recent duplicate results without an eligible saved answer; a transient
 claim prevents simultaneous recovery during preflight. Consumed ID digests can
 persist in the optional Meridian state store; neither mechanism promises
 exactly-once external tool execution. Admission may reclaim a process waiting
 idle for a tool result or another user turn, joining it before replacement; active responses are never
 evicted. A late completed result can use the same replay path. Native Claude transcript lifecycle and lineage persistence cannot be
 applied to Antigravity. `ProxyInstance.close()` joins owned subprocesses;
-direct fetch embedders use `closeBackend()`.
+direct fetch embedders use `closeBackend()`. Shutdown also joins workspace cleanup
+for processes already removed from admission maps before closing SQLite.
 
 `backend: "combined"` retains the Claude listener and mounts Antigravity at
 `/antigravity/*`, with independent admission, processes, quotas and shutdown.

@@ -105,7 +105,8 @@ system instructions or tool definitions: Meridian claims the completed results,
 stops and joins the old CLI, then replays the completed history through a fresh
 official CLI with the new context. Telemetry labels this `client-context-replay`.
 The old pending action is never resumed under the changed tool policy. Other
-changed live continuations and recently consumed duplicate results receive HTTP 409.
+changed live continuations and recently consumed duplicate results without a saved
+completed answer receive HTTP 409.
 Unpaired or malformed historical results receive HTTP 400. New user text
 may accompany the exact result or follow it in another user message. This steering
 continues the same pending process and is delivered separately from tool output. Independent upstream calls are coalesced into one response, preserving every
@@ -741,8 +742,8 @@ start competing replays, and success removes the exception.
 With `MERIDIAN_AGY_STATE_PATH`, these joined-interruption fingerprints persist for
 up to 30 minutes (at most 256). They contain hashes, not prompts or tool results.
 Clients must still resend the complete matching request. This does not restore
-in-flight processes after a crash, cache a lost completed response, or guarantee
-exactly-once execution. No automatic replay exception is granted after a new
+in-flight processes after a crash or guarantee exactly-once execution. Completed
+answer recovery has a separate bounded snapshot cache, described below. No automatic replay exception is granted after a new
 client tool was emitted, or when native browser/subagent capabilities are enabled.
 
 The actual Pi/OpenCode fault gate drops delivery after accepting a completed
@@ -775,3 +776,37 @@ Earley parsing with a five-second deadline; imports are limited to individual
 64-KiB grammars are accepted, with eight validators and a bounded waiting queue.
 Grammar checking validates output; it does not provide native constrained
 sampling or guarantee the model produces a valid payload.
+
+
+### Lost completed answers
+
+On the Anthropic Messages route, an exact retry of a completed tool-result turn
+can receive the saved terminal text answer, including its original message ID,
+content, stop reason and usage. The retry does not call agy, run response/telemetry
+observers again, or add a second usage record. JSON and SSE retries are supported;
+`x-meridian-response-replayed: true` identifies this path. Request transforms still
+run before matching the validated request.
+
+Matching binds the credential digest, complete history and result, system
+instructions, tools, model, session, execution controls and tool choice. Ordinary
+prompts are not memoized. Answers issuing another client tool call are excluded:
+the bridge cannot know whether that call already executed at the client. Requests
+with native browser/subagent grants are also excluded. OpenAI routes retain their
+existing Responses storage semantics; `store: false` never opts into this cache.
+
+The separate answer budget is 128 entries, 16 MiB total and 1 MiB per serialized
+snapshot, retained for up to 30 minutes. Oldest entries are evicted; retries do not
+extend retention. Optional `MERIDIAN_AGY_STATE_PATH` persists these answer bodies
+in Meridian's private SQLite file; without it, they disappear on restart. Oversized
+answers still succeed but are not saved. If an answer is missing while its result
+ID remains consumed, the retry receives 409. After both ledgers expire or evict
+entries, exactly-once behavior is not guaranteed; clients must keep their history.
+
+The live fault gate consumes an entire completed upstream response and then drops
+it before the client sees it. It requires automatic recovery with identical message
+ID, text and usage, one audited client execution, and zero HTTP errors:
+
+```sh
+E2E_AGY_LOST_ANSWER=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_LOST_ANSWER=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```

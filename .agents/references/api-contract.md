@@ -32,3 +32,9 @@ observers cannot mutate saved responses. Owner authorization is tracked in #1073
 of Anthropic numeric thinking budgets to Gemini effort variants. Response headers
 and health expose adaptation; effective model IDs appear in responses and telemetry.
 Strict rejection remains the default; this does not provide native token limits.
+
+Antigravity Messages exact tool-result retries may return a bounded saved terminal
+text answer with `x-meridian-response-replayed: true`, preserving message ID and
+usage without a new model invocation. This cache is separate from OpenAI Responses
+storage and does not change `store: false`. New tool-call output and native-grant
+requests are excluded; see the backend guide for scope and retention limits.

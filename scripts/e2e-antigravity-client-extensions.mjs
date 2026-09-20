@@ -12,7 +12,15 @@ import { once } from 'node:events'
 import { preflightFault } from './lib-antigravity-preflight-fault.mjs'
 import { startProxyServer } from '../dist/server.js'
 
-const disconnect = process.env.E2E_AGY_DISCONNECT === '1'
+const lostAnswer = process.env.E2E_AGY_LOST_ANSWER === '1'
+const disconnect = process.env.E2E_AGY_DISCONNECT === '1' || lostAnswer
+let completedWire, recoveredWire
+const wireSummary = wire => {
+  const events = wire.trim().split('\n\n').map(frame => frame.split('\n').find(line => line.startsWith('data: '))).filter(Boolean).map(line => JSON.parse(line.slice(6)))
+  assert.equal(events.at(-1).type, 'message_stop')
+  assert(!events.some(event => event.content_block?.type === 'tool_use'), 'Lost answer must be terminal text')
+  return { id: events.find(event => event.type === 'message_start').message.id, text: events.filter(event => event.delta?.type === 'text_delta').map(event => event.delta.text).join(''), terminal: events.find(event => event.type === 'message_delta') }
+}
 let dropped = false
 const client = process.env.E2E_CLIENT || 'pi'
 assert(['pi', 'opencode'].includes(client))
@@ -30,7 +38,7 @@ const receipt = `CLIENT_${randomUUID()}`
 const env = { ...process.env }
 for (const key of Object.keys(env)) if (/^(OPENCODE_|MERIDIAN_|CLAUDE_PROXY_|ANTHROPIC_|CLAUDE_|GEMINI_API_KEY|GOOGLE_API_KEY)/.test(key)) delete env[key]
 env.MERIDIAN_EXTENSION_AUDIT = auditPath; env.MERIDIAN_EXTENSION_RECEIPT = receipt
-const report = { disconnect, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
+const report = { disconnect, lostAnswer, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
 const requests = [], events = [], apiLog = [], httpErrors = []
 let proxy, relay, child, exited = false, stdout = '', stderr = ''
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -66,6 +74,14 @@ try {
         assert.equal((await audit()).filter(event => event.event === 'executed').length, 1)
         // Headers arrive only after the backend accepts the completed tool result.
         // Consume the first SSE frame, then sever delivery before the client sees it.
+        if (lostAnswer) {
+          completedWire = wireSummary(await response.text())
+          assert(completedWire.text.includes(receipt))
+          dropped = true
+          res.destroy()
+          console.log('Injected lost completed answer after consuming message_stop')
+          return
+        }
         const reader = response.body.getReader()
         const first = await reader.read()
         assert(!first.done, 'Fault must interrupt an actual upstream response')
@@ -76,6 +92,10 @@ try {
         reader.releaseLock()
         console.log('Injected disconnect after completed tool result acceptance')
         return
+      }
+      if (lostAnswer && response.headers.get('x-meridian-response-replayed') === 'true') {
+        recoveredWire = wireSummary(await response.clone().text())
+        assert.deepEqual(recoveredWire, completedWire, 'Retry must return the identical saved answer, ID and usage')
       }
       res.writeHead(response.status, { 'content-type': response.headers.get('content-type') })
       Readable.fromWeb(response.body).on('error', error => res.destroy(error)).pipe(res)
@@ -251,6 +271,7 @@ try {
     mark('official configuration timeout recovers before any client generation')
   }
   if (disconnect) assert(dropped)
+  if (lostAnswer) { assert(recoveredWire, 'Client must recover through the saved-answer path'); mark('Lost completed answer replayed with identical ID/content/usage and no new model invocation') }
   assert.deepEqual(httpErrors, [], 'A green client retry must not hide bridge errors')
   assert.equal(version(executable), report.cliVersion)
   report.requests = requests.length
