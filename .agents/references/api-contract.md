@@ -43,3 +43,10 @@ results prohibit redelivery of the old call. IDs are bounded and snapshots share
 the existing answer budget. Native-grant requests are excluded. This is bounded
 request idempotency, not an exactly-once client-tool execution contract; see the
 backend guide and integrations for supported retry boundaries (#1073).
+
+Identified Antigravity Messages requests may set `x-meridian-replay-only: true`
+to recover a saved response without starting generation. The same fingerprint,
+credential scope and consumed-tool checks apply; a missing snapshot returns 404.
+The header requires an explicit request ID and native grants disabled; invalid
+values and non-Anthropic use are rejected. JSON/SSE selection may change.
+This supports the OpenCode incremental-text recovery integration (#1073).

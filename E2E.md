@@ -5816,3 +5816,37 @@ The test observes asynchronous teardown after stream cancellation; it has no
 100 ms product latency requirement. The correction uses a bounded two-second
 wall-clock wait and retains both zero in-flight and revoked-publication assertions.
 This test-only correction does not change production shutdown behavior.
+
+## Incremental OpenCode text with protected tool delivery
+
+```sh
+E2E_CLIENT=opencode E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 \
+E2E_AGY_TEXT_STREAM=1 node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+The plugin forwards text before completion, holds tool/terminal events, and uses
+one cache-only JSON recovery after broken delivery. The existing partial-tool
+fault remains enabled. An additional real-model text turn sends only a text
+prefix to OpenCode, holds completion until the client's public UI event feed emits
+`message.part.delta`, then disconnects the response. The final client text must
+exactly match the requested unique marker, with no repeated prefix.
+
+Retained harness correction: `meridian-agy-opencode-extensions-rZsib5` passed tool
+recovery but polled persisted message text for the streaming assertion. OpenCode
+publishes text deltas over `/event` before persisting the finished text, so the
+gate now observes that public UI feed while the assistant is still incomplete.
+This changes the observation point, not the streaming implementation.
+
+Unit tests cover immediate text, tools held through EOF, Unicode/rechunked saved
+answers, clean truncated EOF, mismatched prefixes, missing snapshots, cancellation,
+limits and pass-through. The server cache-only test requires 404 without generation
+on a miss and retains changed-request 409 protection. An initial focused run also
+hit the old bad-exit test's 200 ms timeout (504 instead of 502); bad-exit validation
+now has its own two-second fixture, while the lingering-process test retains its
+200 ms timeout. The focused corrected exit test passes.
+
+**Verified 2026-09-20:** `meridian-agy-opencode-extensions-GF2xl7` passed all
+nine checks / 17 requests with zero HTTP errors on OpenCode 1.18.31, official
+agy 1.2.7, Gemini 3.8 Flash low, macOS arm64 and Node 22.22.3. The report records
+`incrementalTextVisible: true`, `cacheOnlyRecovery: true`, and zero tool executions
+before the disconnect. Final text exactly matched the unique marker.

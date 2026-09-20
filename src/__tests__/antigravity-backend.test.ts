@@ -467,9 +467,12 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(stream).not.toContain("event: message_stop")
   })
   it("does not commit success before a clean CLI exit", async () => {
-    const { send } = fixture({ turnTimeoutMs: 200 })
-    expect((await send({ ...initial("BAD_EXIT"), tools: [] })).status).toBe(502)
-    expect((await send({ ...initial("LINGER"), tools: [] })).status).toBe(504)
+    // Observe a bad exit independently of the short deadline used for a
+    // deliberately lingering process; process startup can exceed 200 ms on CI.
+    const badExit = fixture({ turnTimeoutMs: 2_000 })
+    expect((await badExit.send({ ...initial("BAD_EXIT"), tools: [] })).status).toBe(502)
+    const linger = fixture({ turnTimeoutMs: 200 })
+    expect((await linger.send({ ...initial("LINGER"), tools: [] })).status).toBe(504)
   })
   it("bounds simultaneous preflight admission and cancels initialization on shutdown", async () => {
     const { send, runtime } = fixture({ maxConcurrent: 1 })
@@ -737,6 +740,22 @@ describe.skipIf(process.platform === "win32")("Antigravity identified tool deliv
     expect((await decode(await send(followup))).content[0]?.text).toBe("ONCE|ONCE")
     expect((await send(request)).status).toBe(409)
     expect((await send(followup)).headers.get("x-meridian-response-replayed")).toBe("true")
+  })
+  it("cache-only recovery never generates on a miss and preserves normal identity checks", async () => {
+    const { send, runtime, server } = fixture()
+    const request = { ...initial(), meridian_request_id: "cache-only" }
+    const recover = (body: object, headers = { "x-meridian-replay-only": "true" }) => server.app.fetch(new Request("http://local/v1/messages", { method: "POST", headers, body: JSON.stringify(body) }))
+    expect((await recover(request)).status).toBe(404)
+    expect(runtime.requests).toHaveLength(0)
+    expect((await recover(initial())).status).toBe(400)
+    expect((await recover(request, { "x-meridian-replay-only": "false" })).status).toBe(400)
+    const original = await decode(await send(request))
+    const count = runtime.requests.length
+    const saved = await recover(request)
+    expect(saved.headers.get("x-meridian-response-replayed")).toBe("true")
+    expect(await decode(saved)).toEqual(original)
+    expect((await recover({ ...request, max_tokens: 200 })).status).toBe(409)
+    expect(runtime.requests).toHaveLength(count)
   })
   it("coalesces concurrent identified requests and does not cancel the owner when a waiter disconnects", async () => {
     const { send, runtime } = fixture()

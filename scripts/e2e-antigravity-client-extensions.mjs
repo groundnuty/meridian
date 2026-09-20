@@ -13,6 +13,9 @@ import { preflightFault } from './lib-antigravity-preflight-fault.mjs'
 import { startProxyServer } from '../dist/server.js'
 
 const lostTool = process.env.E2E_AGY_LOST_TOOL === '1'
+const textStream = process.env.E2E_AGY_TEXT_STREAM === '1'
+let textPrefixSent = false, releaseText
+const streamMarker = `STREAM_${randomUUID()}`
 const partialTool = process.env.E2E_AGY_PARTIAL_TOOL === '1'
 assert(!partialTool || lostTool, 'Partial delivery requires the lost-tool gate')
 const cancelTool = process.env.E2E_AGY_CANCEL_TOOL === '1'
@@ -46,8 +49,9 @@ const receipt = `CLIENT_${randomUUID()}`
 const env = { ...process.env }
 for (const key of Object.keys(env)) if (/^(OPENCODE_|MERIDIAN_|CLAUDE_PROXY_|ANTHROPIC_|CLAUDE_|GEMINI_API_KEY|GOOGLE_API_KEY)/.test(key)) delete env[key]
 env.MERIDIAN_EXTENSION_AUDIT = auditPath; env.MERIDIAN_EXTENSION_RECEIPT = receipt
-const report = { disconnect, lostAnswer, lostTool, cancelTool, partialTool, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
+const report = { disconnect, lostAnswer, lostTool, cancelTool, partialTool, textStream, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
 const requests = [], events = [], apiLog = [], httpErrors = []
+let eventAbort, eventTask
 let proxy, relay, child, exited = false, stdout = '', stderr = ''
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 const audit = async () => (await readFile(auditPath, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
@@ -75,8 +79,23 @@ try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk)
       const raw = Buffer.concat(chunks).toString('utf8')
       if (raw) { requests.push(JSON.parse(raw)); await writeFile(join(root, 'requests.json'), JSON.stringify(requests, null, 2)) }
-      const response = await fetch(upstream + req.url, { method: req.method, headers: { 'content-type': 'application/json', ...(req.headers['idempotency-key'] ? { 'idempotency-key': req.headers['idempotency-key'] } : {}) }, body: raw || undefined, signal: abort.signal })
+      const response = await fetch(upstream + req.url, { method: req.method, headers: { 'content-type': 'application/json', ...(req.headers['idempotency-key'] ? { 'idempotency-key': req.headers['idempotency-key'] } : {}), ...(req.headers['x-meridian-replay-only'] ? { 'x-meridian-replay-only': req.headers['x-meridian-replay-only'] } : {}) }, body: raw || undefined, signal: abort.signal })
       if (!response.ok) { const text = await response.clone().text(); httpErrors.push({ status: response.status, text }); console.log('HTTP', response.status, text) }
+      if (textStream && !textPrefixSent && response.ok && response.headers.get('content-type')?.includes('text/event-stream') && raw.includes(streamMarker)) {
+        const frames = (await response.text()).trim().split('\n\n').map(frame => frame.split('\n').find(line => line.startsWith('data: '))).filter(Boolean).map(line => JSON.parse(line.slice(6)))
+        assert(!frames.some(frame => frame.content_block?.type === 'tool_use'))
+        const index = frames.findIndex(frame => frame.delta?.type === 'text_delta' && frame.delta.text.length > 1)
+        assert(index > 0, 'Real model must supply incremental text')
+        const first = frames[index]
+        const prefix = [...first.delta.text].slice(0, Math.max(1, Math.floor([...first.delta.text].length / 2))).join('')
+        res.writeHead(response.status, { 'content-type': 'text/event-stream' })
+        for (const frame of [...frames.slice(0, index), { ...first, delta: { ...first.delta, text: prefix } }]) res.write(`event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`)
+        textPrefixSent = true
+        await new Promise(resolve => { releaseText = resolve })
+        res.destroy()
+        console.log('Observed live client text before completion, then disconnected its prefix')
+        return
+      }
       if (lostTool && response.ok && !deliveredTool) {
         let wire
         if (cancelTool) {
@@ -113,8 +132,19 @@ try {
         res.writeHead(response.status, { 'content-type': response.headers.get('content-type') }); res.end(wire); return
       }
       if (lostTool && deliveredTool && !replayedTool && response.headers.get('x-meridian-response-replayed') === 'true') {
-        const frames = (await response.clone().text()).trim().split('\n\n').map(frame => frame.split('\n').find(line => line.startsWith('data: '))).filter(Boolean).map(line => JSON.parse(line.slice(6)))
-        replayedTool = { requestId: req.headers['idempotency-key'] || JSON.parse(raw).meridian_request_id, message: frames.find(frame => frame.type === 'message_start').message.id, calls: frames.filter(frame => frame.content_block?.type === 'tool_use').map(frame => frame.content_block) }
+        let message, calls
+        if (response.headers.get('content-type')?.includes('application/json')) {
+          const answer = await response.clone().json()
+          message = answer.id
+          calls = answer.content.filter(block => block.type === 'tool_use').map(block => ({ ...block, input: {} }))
+          assert.equal(req.headers['x-meridian-replay-only'], 'true', 'JSON stream recovery must be cache-only')
+          report.cacheOnlyRecovery = true
+        } else {
+          const frames = (await response.clone().text()).trim().split('\n\n').map(frame => frame.split('\n').find(line => line.startsWith('data: '))).filter(Boolean).map(line => JSON.parse(line.slice(6)))
+          message = frames.find(frame => frame.type === 'message_start').message.id
+          calls = frames.filter(frame => frame.content_block?.type === 'tool_use').map(frame => frame.content_block)
+        }
+        replayedTool = { requestId: req.headers['idempotency-key'] || JSON.parse(raw).meridian_request_id, message, calls }
         assert.deepEqual(replayedTool, deliveredTool, 'Retry must preserve request, message and tool identities')
       }
       const latest = raw ? JSON.parse(raw).messages?.at(-1)?.content : undefined
@@ -244,6 +274,25 @@ try {
       assert(response.ok, `${path}: ${response.status}: ${text}`); return text ? JSON.parse(text) : undefined
     }
     await writeFile(join(root, 'openapi.json'), JSON.stringify(await api('/doc')))
+    if (textStream) {
+      eventAbort = new AbortController()
+      const response = await fetch(server + '/event', { headers: { authorization: `Basic ${Buffer.from(`opencode:${env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}` }, signal: eventAbort.signal })
+      assert(response.ok)
+      eventTask = (async () => {
+        const decoder = new TextDecoder()
+        let pending = ''
+        for await (const chunk of Readable.fromWeb(response.body)) {
+          pending += decoder.decode(chunk, { stream: true })
+          while (pending.includes('\n\n')) {
+            const index = pending.indexOf('\n\n'), frame = pending.slice(0, index)
+            pending = pending.slice(index + 2)
+            const data = frame.split('\n').find(line => line.startsWith('data:'))
+            if (data) events.push(JSON.parse(data.slice(5)))
+          }
+        }
+      })().catch(error => { if (!eventAbort.signal.aborted) report.eventStreamError = String(error) })
+    }
+
     const session = await api('/session', { title: 'Client extension acceptance' })
     const path = `/session/${session.id}`
     async function turn(text, interact, interrupted = false) {
@@ -272,6 +321,22 @@ try {
     assert(allowed.includes(receipt) && allowed.includes('CLIENT_PLUGIN_AFTER'), allowed)
     assert.equal((await audit()).filter(e => e.event === 'executed').length, 1)
     mark('real OpenCode plugin tool, permission approval and result hook')
+    if (textStream) {
+      const streamed = await turn(`Reply exactly ${streamMarker} with no other text and no tools.`, async () => {
+        try {
+          await until(() => textPrefixSent, 'relay text prefix')
+          await until(async () => {
+            const last = (await api(path + '/message')).at(-1)
+            return last?.info.role === 'assistant' && !last.info.time?.completed && events.some(event => event.type === 'message.part.delta' && event.properties?.messageID === last.info.id && event.properties.field === 'text' && event.properties.delta.length > 0)
+          }, 'client displays text before message_stop')
+          report.incrementalTextVisible = true
+        } finally { releaseText?.() }
+      })
+      const text = JSON.parse(streamed).parts.filter(part => part.type === 'text').map(part => part.text).join('')
+      assert.equal(text.trim(), streamMarker, 'Recovered text must not repeat its visible prefix')
+      mark('OpenCode displays text before completion and recovers a disconnected prefix without duplication')
+    }
+
     const denied = await turn('Call client_denied once. If permission is denied, report CLIENT_DENIED and stop. Never retry or use another tool.', async api => {
       const request = await until(async () => (await api('/permission')).find(p => p.sessionID === session.id && p.permission === 'client_denied'), 'denial prompt')
       await api(`/permission/${request.id}/reply`, { reply: 'reject' })
@@ -333,6 +398,9 @@ try {
   console.log(JSON.stringify(report, null, 2))
 } catch (error) { report.error = String(error); throw error }
 finally {
+  releaseText?.()
+  eventAbort?.abort()
+  await eventTask
   await writeFile(join(root, 'report.json'), JSON.stringify(report, null, 2))
   await writeFile(join(root, 'events.json'), JSON.stringify(events, null, 2))
   await writeFile(join(root, 'api.json'), JSON.stringify(apiLog, null, 2))

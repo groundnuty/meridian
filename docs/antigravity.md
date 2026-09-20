@@ -864,21 +864,23 @@ a broken stream: it rejects the incomplete assistant turn before executing tools
 then retries the saved response with the same ID. This requires Pi to classify
 the transport error as retryable; it does not repair arbitrary malformed streams.
 
-OpenCode 1.18.31 now handles the tested partial-stream disconnect through a
-provider-scoped delivery buffer installed by the plugin's supported `config` hook.
-It wraps the configured provider fetch (preserving an existing custom fetch),
-withholds SSE from the client until EOF and a `message_stop` marker, and lets the
-client retry a broken delivery with the same request ID. The buffer is limited to
-4 MiB and five minutes and honors cancellation; HTTP errors and non-SSE responses
-pass through. Other providers are untouched.
+OpenCode's provider-scoped transport forwards text events as they arrive while
+holding tool calls and terminal events until EOF and `message_stop`. This restores
+incremental text display without exposing executable tool prefixes from incomplete
+responses. Text following the first tool block stays held to preserve event order.
+The wrapper preserves an existing configured fetch, honors cancellation, and
+limits each response to 4 MiB with a five-minute overall deadline. HTTP errors and
+non-SSE responses pass through; other providers remain untouched.
 
-This deliberately trades token-by-token display for complete-response delivery
-when this plugin is installed. Without the buffer, the retained live failure
-showed OpenCode executing a tool before a disconnect and then retrying with changed
-instructions. With it, the same fault recovered the saved IDs, zero executions
-before the disconnect, and one approved execution afterward. Request validation
-remains unchanged. This is transport recovery, not durable exactly-once execution
-across a client crash or permission to replay completed actions.
+On a transport interruption or truncated EOF, it requests the saved response once
+as JSON using the original ID and `x-meridian-replay-only: true`. That header never
+starts a model: absent/expired snapshots return 404. Normal credential, fingerprint
+and consumed-tool checks remain enforced. The wrapper verifies the message ID and
+every already displayed text prefix before emitting only the missing suffix and
+withheld tools. Changed prefixes, missing snapshots, malformed streams and
+cancellation fail explicitly; no replacement answer is silently spliced into
+visible text. This is bounded delivery recovery, not durable exactly-once action
+execution across a client crash.
 Approvals remain in the client and are never granted by these helpers.
 
 ```sh
@@ -894,7 +896,7 @@ To test client-visible partial tool delivery for either supported client:
 
 ```sh
 E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
-E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_AGY_TEXT_STREAM=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
 ```
 
 The relay sends tool blocks, waits 250 ms, records actual executions, then severs

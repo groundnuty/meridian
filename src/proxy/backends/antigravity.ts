@@ -121,6 +121,8 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     const scope = agResponseScope(request.headers)
     const canSaveAnswer = saveCompletedAnswers && !runtime.options.allowNativeBrowser && !runtime.options.allowNativeSubagents
     const requestId = saveCompletedAnswers ? agRequestId(body, request.headers) : undefined
+    const replayOnly = request.headers.get("x-meridian-replay-only")
+    if (replayOnly !== null && (replayOnly !== "true" || !requestId || !canSaveAnswer)) throw new AntigravityError("Cache-only recovery requires an identified Anthropic request with native grants disabled")
     if (requestId && !canSaveAnswer) throw new AntigravityError("Identified retries require native browser/subagent grants to be disabled")
     await completedAnswers.wait(body, scope, requestId, request.signal)
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
@@ -130,6 +132,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       if (calls.some(call => runtime.hasConsumedTool(call.id) || runtime.recoveringTools.has(call.id) || runtime.toolOwners.get(call.id)?.busy)) throw new AntigravityError("Saved tool calls are already being answered or consumed; continue with their results", 409)
       return replayAgAnswer(saved, body.stream === true, adaptationHeaders)
     }
+    if (replayOnly) throw new AntigravityError("No saved response is available for this request", 404, "not_found_error")
     const release = completedAnswers.claim(body, scope, requestId)
     let run: AntigravityRun
     try { run = await selectRun(body, request.signal) } catch (error) { release(); throw error }
