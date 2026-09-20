@@ -192,11 +192,12 @@ try {
   async function expireApproval() {
     // Simulate a human taking longer than the configured CLI tool wait. The
     // completed client result must recover without asking the client to run twice.
-    await until(async () => {
-      const response = await fetch(upstream + '/health', { signal: AbortSignal.timeout(20000) })
-      assert(response.ok)
-      return (await response.json()).pendingToolProcesses === 0
-    }, 'pending CLI owner expires before delayed approval', pendingToolTimeoutMs + 30000)
+    await delay(pendingToolTimeoutMs + 1500)
+    // Health performs a fresh official version/config check (up to 20s + two
+    // 20s probes). Do not poll it repeatedly or cut off its legitimate retry.
+    const response = await fetch(upstream + '/health', { signal: AbortSignal.timeout(70000) })
+    assert(response.ok)
+    assert.equal((await response.json()).pendingToolProcesses, 0, 'Pending CLI owner must expire before approval')
     assert.equal((await audit()).filter(e => e.event === 'executed').length, 1, 'Waiting for approval must not execute the client tool')
   }
   async function configureInstalledClient() {

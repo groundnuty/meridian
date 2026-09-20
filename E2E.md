@@ -6005,3 +6005,14 @@ checks on the rebuilt actual app; its screenshot confirms the corrected alignmen
 The model/client flow remains the successful `zHi0BF` run above; this layout-only
 follow-up did not rerun generation. All 4,733 tests passed across 15 groups before
 the final checkbox style correction; typecheck and both builds pass after it.
+
+The final packaged OpenCode gate `meridian-agy-opencode-extensions-fIjLBY`
+passed setup, protected tool delivery, incremental-text/prefix recovery, denial,
+plugin rejection and both question outcomes with no client HTTP errors. Its
+delayed-approval health observation exceeded the fixture's 20-second fetch timeout.
+Health performs a fresh official version/configuration check, so that timeout
+could cut off a legitimate bounded retry. The gate now waits the production tool
+deadline plus termination grace, then makes one health observation with a
+70-second deadline (version plus two configuration probes), instead of polling
+readiness repeatedly. Actual expiry and the zero-client-errors requirement remain
+assertions; the timed-out run is not counted as a full pass.
