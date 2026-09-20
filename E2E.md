@@ -5997,3 +5997,11 @@ matched the displayed commands, choices survived refresh and invalid environment
 input disabled copying. Desktop/client Node was the app's 22.23.2; the live service
 used Node 22.22.3, agy 1.2.7 and macOS arm64. Screenshot: `desktop-setup.png`.
 The desktop build/typecheck and thirteen focused provider/command tests pass.
+
+Visual review caught the desktop's global full-width input rule stretching the
+new default checkbox. The shared setup style now fixes that checkbox's dimensions
+and flex basis. `meridian-agy-setup-ui-NXbi4h` passes all three configuration/UI
+checks on the rebuilt actual app; its screenshot confirms the corrected alignment.
+The model/client flow remains the successful `zHi0BF` run above; this layout-only
+follow-up did not rerun generation. All 4,733 tests passed across 15 groups before
+the final checkbox style correction; typecheck and both builds pass after it.
