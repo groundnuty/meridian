@@ -42,8 +42,16 @@ cancellation and bounded event replay. `antigravityReplay.ts` saves terminal tex
 answers to exact Anthropic tool-result continuations in a separate credential-scoped
 budget (128 entries, 16 MiB total, 1 MiB each, 30 minutes). Snapshots are saved
 before terminal delivery and replay as JSON or lazily generated SSE without model,
-response-hook or usage accounting duplication. Ordinary prompts, new tool calls,
-native-capability requests and OpenAI routes do not use this cache. Optional `antigravityState.ts` persists
+response-hook or usage accounting duplication. Explicit request IDs extend this
+same budget to ordinary prompts and tool batches. Identity binds a credential
+scope and complete request fingerprint; concurrent duplicates wait with bounded,
+abortable waiter sets. Tool batches are saved before the first tool block, preserve
+original call IDs on replay, and become non-replayable when their results are
+being accepted or consumed. CLI loss still uses completed-history result recovery.
+Native-capability requests and OpenAI routes do not use this cache. Pi's example
+extension assigns IDs before SDK retries. OpenCode's V1 example plugin uses its
+public active assistant-message identity because its processor reruns header hooks
+on retry; a random ID per header-hook invocation would repeat generation. Optional `antigravityState.ts` persists
 Meridian-owned records in private SQLite with an exclusive lifetime owner guard.
 `antigravitySessions.ts` atomically claims exact completed/joined text/client-tool
 native mappings and uses the public CLI conversation flag. In-flight processes

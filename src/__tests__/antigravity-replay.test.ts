@@ -28,7 +28,7 @@ describe('Antigravity completed answer storage', () => {
     expect(store.get(body, 'other')).toBeUndefined()
     for (const changed of [{ max_tokens: 200 }, { model: 'fixture-model-high' }, { system: 'changed' }, { tool_choice: { type: 'none' as const } }, { meridian_session_key: 'another' }, { messages: [...body.messages.slice(0, -1), { role: 'user' as const, content: 'new prompt' }] }]) expect(store.get({ ...body, ...changed }, 'owner')).toBeUndefined()
     const saved = store.get(body, 'owner')!
-    saved.content[0]!.text = 'mutated'
+    if (saved.content[0]?.type === 'text') saved.content[0].text = 'mutated'
     expect(store.get(body, 'owner')).toEqual(answer)
     const ordinary = parseAgRequest({ model: 'fixture-model', max_tokens: 100, messages: [{ role: 'user', content: 'same prompt' }] })
     store.put(ordinary, 'owner', answer)
@@ -64,6 +64,37 @@ describe('Antigravity completed answer storage', () => {
     expect(store.get(request('19'), 'owner')).toEqual(large)
     for (const row of state.records('completed-answers')) state.put('completed-answers', row.id, row.scope, '{}', Date.now() - 1, 128, 16 * 1024 * 1024)
     expect(new AgCompletedAnswers(state).get(request('19'), 'owner')).toBeUndefined()
+  })
+  it('binds explicit identities to their request and shares the existing count budget', () => {
+    const store = new AgCompletedAnswers(), body = request()
+    store.put(body, 'owner', answer)
+    for (let i = 0; i < 128; i++) store.put(body, 'owner', answer, `explicit-${i}`)
+    expect(store.get(body, 'owner')).toBeUndefined()
+    expect(store.get(body, 'owner', 'explicit-127')).toEqual(answer)
+    expect(() => store.get({ ...body, max_tokens: 200 }, 'owner', 'explicit-127')).toThrow('different request')
+    expect(store.get(body, 'other', 'explicit-127')).toBeUndefined()
+    expect(() => store.put(body, 'owner', { ...answer, content: [{ type: 'text', text: 'x'.repeat(1024 * 1024) }] }, 'oversized')).toThrow('1 MiB')
+  })
+  it('reconstructs tool JSON, including Unicode arguments, as bounded SSE deltas', async () => {
+    const call = { type: 'tool_use' as const, id: 'original-call', name: 'lookup', input: { value: 'x'.repeat(4090) + '🧪你好' } }
+    const response = replayAgAnswer({ ...answer, content: [call], stop_reason: 'tool_use' }, true, {})
+    const events = (await response.text()).trim().split('\n\n').map(frame => JSON.parse(frame.split('\ndata: ')[1]!))
+    expect(events.find(event => event.type === 'content_block_start').content_block).toEqual({ ...call, input: {} })
+    expect(JSON.parse(events.filter(event => event.delta?.type === 'input_json_delta').map(event => event.delta.partial_json).join(''))).toEqual(call.input)
+  })
+  it('bounds concurrent waiters and releases cancelled waiters immediately', async () => {
+    const store = new AgCompletedAnswers(), body = request()
+    const release = store.claim(body, 'owner', 'active')
+    const aborts = Array.from({ length: 128 }, () => new AbortController())
+    const waiters = aborts.map(abort => store.wait(body, 'owner', 'active', abort.signal).catch(error => error))
+    await expect(store.wait(body, 'owner', 'active', new AbortController().signal)).rejects.toThrow('Too many retries')
+    aborts[0]!.abort()
+    const replacement = store.wait(body, 'owner', 'active', new AbortController().signal)
+    release()
+    await replacement
+    const results = await Promise.all(waiters)
+    expect(results[0]).toBeInstanceOf(Error)
+    expect(results.slice(1).every(result => result === undefined)).toBe(true)
   })
   it('reconstructs complete SSE including exact unicode, message identity, stops and usage', async () => {
     const value = { ...answer, content: [{ type: 'text' as const, text: 'x'.repeat(4095) + '🧪 café' }], stop_reason: 'stop_sequence', stop_sequence: 'END' }
@@ -106,6 +137,28 @@ describe.skipIf(process.platform === 'win32')('Antigravity completed answer HTTP
     expect(await response.text()).toContain('UNSTORED')
     expect(runtime.state?.records('completed-answers')).toHaveLength(0)
     expect(runtime.state?.records('responses')).toHaveLength(0)
+  })
+  it('restores identified tool delivery after restart without starting another CLI', async () => {
+    const statePath = join(directory(), 'state.sqlite')
+    function backend() {
+      const runtime = new AntigravityRuntime({ executable: fileURLToPath(new URL('./fixtures/agy-cli.cjs', import.meta.url)), statePath, reuseConversations: false, allowToolBridge: true })
+      const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: 'antigravity' }, runtime)
+      cleanup.push(server.closeBackend)
+      const send = (body: unknown) => server.app.fetch(new Request('http://local/v1/messages', { method: 'POST', headers: { 'idempotency-key': 'persisted-call' }, body: JSON.stringify(body) }))
+      return { runtime, server, send }
+    }
+    const body = { model: 'fixture-model', max_tokens: 100, tools: [{ name: 'lookup', input_schema: { type: 'object' } }], messages: [{ role: 'user', content: 'lookup' }] }
+    const original = backend()
+    const first = await original.send(body)
+    expect(first.status).toBe(200)
+    const value = await first.json()
+    await original.server.closeBackend(); cleanup.pop()
+    const replacement = backend()
+    replacement.runtime.verifyAccount = async () => { throw new Error('Saved calls must not invoke the CLI') }
+    const second = await replacement.send(body)
+    expect(second.headers.get('x-meridian-response-replayed')).toBe('true')
+    expect(await second.json()).toEqual(value)
+    expect(replacement.runtime.runs.size).toBe(0)
   })
   it('returns the saved answer after restart with no CLI/preflight, hooks or duplicate usage', async () => {
     const statePath = join(directory(), 'state.sqlite')

@@ -1,4 +1,4 @@
-import { AgCompletedAnswers, replayAgAnswer } from "./antigravityReplay"
+import { AgCompletedAnswers, agRequestId, replayAgAnswer } from "./antigravityReplay"
 import { AgResponseJobs, agEventStream, responseEvents } from "./antigravityJobs"
 import { estimateAgTokens } from "./antigravityTokens"
 import { agOpenai } from "./antigravityOpenai"
@@ -120,11 +120,21 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     } : {}
     const scope = agResponseScope(request.headers)
     const canSaveAnswer = saveCompletedAnswers && !runtime.options.allowNativeBrowser && !runtime.options.allowNativeSubagents
-    const saved = canSaveAnswer ? completedAnswers.get(body, scope) : undefined
-    if (saved) return replayAgAnswer(saved, body.stream === true, adaptationHeaders)
-    const run = await selectRun(body, request.signal)
-    let completed = false
-    const cancel = () => { if (!completed) run.abort(new AntigravityError("Request cancelled", 499, "api_error")) }
+    const requestId = saveCompletedAnswers ? agRequestId(body, request.headers) : undefined
+    if (requestId && !canSaveAnswer) throw new AntigravityError("Identified retries require native browser/subagent grants to be disabled")
+    await completedAnswers.wait(body, scope, requestId, request.signal)
+    if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
+    const saved = canSaveAnswer ? completedAnswers.get(body, scope, requestId) : undefined
+    if (saved) {
+      const calls = saved.content.filter(block => block.type === "tool_use")
+      if (calls.some(call => runtime.hasConsumedTool(call.id) || runtime.recoveringTools.has(call.id) || runtime.toolOwners.get(call.id)?.busy)) throw new AntigravityError("Saved tool calls are already being answered or consumed; continue with their results", 409)
+      return replayAgAnswer(saved, body.stream === true, adaptationHeaders)
+    }
+    const release = completedAnswers.claim(body, scope, requestId)
+    let run: AntigravityRun
+    try { run = await selectRun(body, request.signal) } catch (error) { release(); throw error }
+    let completed = false, cancelledDuringResponse = false
+    const cancel = () => { if (!completed) { cancelledDuringResponse = true; run.abort(new AntigravityError("Request cancelled", 499, "api_error")) } }
     request.signal.addEventListener("abort", cancel, { once: true })
     if (request.signal.aborted) cancel()
     const started = Date.now()
@@ -170,26 +180,34 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           if (event.kind === "tool") {
             emittedTool = true
             const calls = await run.toolBatch(event.call)
-            for (const call of calls) {
-            if (body.tool_choice?.type === "none" || (body.tool_choice?.type === "tool" && body.tool_choice.name !== call.name)) throw new AntigravityError("Antigravity requested a tool excluded by tool_choice", 502, "api_error")
-            content.push(call)
-            const index = content.length - 1
+            for (const call of calls) if (body.tool_choice?.type === "none" || (body.tool_choice?.type === "tool" && body.tool_choice.name !== call.name)) throw new AntigravityError("Antigravity requested a tool excluded by tool_choice", 502, "api_error")
+            const firstIndex = content.length
+            content.push(...calls)
+            run.markDelivered(calls)
+            run.history = [...run.history, { role: "assistant", content }]
+            reason = "tool_use"
+            // Save the whole validated batch before exposing any client action.
+            // If transport loss kills its owner, completed results can use history replay.
+            await runtime.plugins.observe("onResponse", { ...base, content, stop_reason: reason, usage }, request.signal)
+            if (requestId) {
+              const output = content.filter(block => block.type === "text" || block.type === "tool_use")
+              completedAnswers.put(body, scope, { ...base, content: output, stop_reason: reason, stop_sequence: null, usage }, requestId)
+            }
+            for (const [offset, call] of calls.entries()) {
+            const index = firstIndex + offset
             emit?.("content_block_start", { type: "content_block_start", index, content_block: { ...call, input: {} } })
             emit?.("content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(call.input) } })
             emit?.("content_block_stop", { type: "content_block_stop", index })
             }
-            run.markDelivered(calls)
-            run.history = [...run.history, { role: "assistant", content }]
-            reason = "tool_use"
           }
           break
         }
         if (forcedAgTool(body) && reason !== "tool_use") throw new AntigravityError("Antigravity completed without the required tool call", 502, "api_error")
         if (reason === "end_turn") { run.history = [...run.history, { role: "assistant", content }]; run.rememberCompleted() }
-        await runtime.plugins.observe("onResponse", { ...base, content, stop_reason: reason, usage }, request.signal)
+        if (!emittedTool) await runtime.plugins.observe("onResponse", { ...base, content, stop_reason: reason, usage }, request.signal)
         const answer = { ...base, content, stop_reason: reason, stop_sequence: stops.matched ?? null, usage }
         const textContent = content.filter(block => block.type === "text")
-        if (canSaveAnswer && !emittedTool && textContent.length === content.length) completedAnswers.put(body, scope, { ...answer, content: textContent })
+        if (canSaveAnswer && !emittedTool && textContent.length === content.length) completedAnswers.put(body, scope, { ...answer, content: textContent }, requestId)
         emit?.("message_delta", { type: "message_delta", delta: { stop_reason: reason, stop_sequence: stops.matched ?? null }, usage })
         emit?.("message_stop", { type: "message_stop" })
         return answer
@@ -199,19 +217,24 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         run.abort(error instanceof Error ? error : new Error(String(error)))
         throw error
       } finally {
-        // Only retry an exact completed-result continuation after joining its
-        // cancelled process, before any new tool call could reach the client.
-        // Native actions cannot be proven side-effect-free, so never replay them.
-        const suffix = body.messages.slice(body.messages.findLastIndex(message => message.role === "assistant") + 1)
-        if (status === 499 && !emittedTool && !runtime.options.allowNativeBrowser && !runtime.options.allowNativeSubagents && suffix.flatMap(blocks).some(block => block.type === "tool_result")) {
-          await runtime.recordInterruptedAfterJoin(body, run.settled)
+        try {
+          // Only retry an exact completed-result continuation after joining its
+          // cancelled process, before any new tool call could reach the client.
+          // Native actions cannot be proven side-effect-free, so never replay them.
+          const suffix = body.messages.slice(body.messages.findLastIndex(message => message.role === "assistant") + 1)
+          if (status === 499 && !emittedTool && !runtime.options.allowNativeBrowser && !runtime.options.allowNativeSubagents && suffix.flatMap(blocks).some(block => block.type === "tool_result")) {
+            await runtime.recordInterruptedAfterJoin(body, run.settled)
+          }
+          const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens }
+          runtime.record(metric)
+          await runtime.plugins.observe("onTelemetry", metric, request.signal)
+        } finally {
+          completed = true
+          run.busy = false
+          request.signal.removeEventListener("abort", cancel)
+          if (requestId && (status !== 200 || cancelledDuringResponse)) await run.settled
+          release()
         }
-        const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens }
-        runtime.record(metric)
-        await runtime.plugins.observe("onTelemetry", metric, request.signal)
-        completed = true
-        run.busy = false
-        request.signal.removeEventListener("abort", cancel)
       }
     }
     if (!body.stream) return Response.json(await consume(), { headers: adaptationHeaders })

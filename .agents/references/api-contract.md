@@ -36,5 +36,10 @@ Strict rejection remains the default; this does not provide native token limits.
 Antigravity Messages exact tool-result retries may return a bounded saved terminal
 text answer with `x-meridian-response-replayed: true`, preserving message ID and
 usage without a new model invocation. This cache is separate from OpenAI Responses
-storage and does not change `store: false`. New tool-call output and native-grant
-requests are excluded; see the backend guide for scope and retention limits.
+storage and does not change `store: false`. Explicit `idempotency-key` headers or
+`meridian_request_id` body fields additionally enable scoped tool-batch/ordinary-turn
+replay. Reusing an ID for a changed request is 409; consumed/in-progress tool
+results prohibit redelivery of the old call. IDs are bounded and snapshots share
+the existing answer budget. Native-grant requests are excluded. This is bounded
+request idempotency, not an exactly-once client-tool execution contract; see the
+backend guide and integrations for supported retry boundaries (#1073).

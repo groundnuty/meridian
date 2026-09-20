@@ -403,6 +403,74 @@ This gate covers saved terminal text answers to Anthropic tool-result turns.
 Responses issuing another tool call, native browser/subagent grants, ordinary
 prompt retries and expired/evicted/oversized snapshots remain outside this path.
 
+### Identified tool-call delivery recovery
+
+```sh
+E2E_AGY_LOST_TOOL=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_LOST_TOOL=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+This mode loads the repository's actual provider-scoped retry extension/plugin,
+consumes a complete tool-call response at the relay, and drops it before delivery.
+It requires a client-supplied identity, automatic retry through the saved-response
+header, unchanged request/message/tool IDs, one approved client execution, and
+zero HTTP errors. It continues the ordinary denial, questions, dynamic Pi tool and
+delayed-approval checks. The bridge uses only the official subscription CLI.
+
+**Verified 2026-09-19:** macOS arm64, Node 22.22.3, agy 1.2.7, Gemini 3.8
+Flash Low. Pi 0.72.1 artifact `meridian-agy-pi-extensions-Hudt9x` passed seven
+checks / 15 requests. OpenCode 1.18.31 artifact
+`meridian-agy-opencode-extensions-wzsnMB` passed seven / 13. Both recorded zero
+HTTP errors. A subsequent Pi run against the updated build,
+`meridian-agy-pi-extensions-OuGSHW`, also passed seven checks / 15 requests with
+zero HTTP errors; one 20,144 ms first-attempt configuration timeout recovered.
+The earlier Pi run encountered two first-attempt configuration timeouts, each
+recovered by the bounded official read-only retry (21,015 ms/SIGKILL/zero bytes;
+20,098 ms/exit 1/244 bytes). No configuration contents were retained in diagnostics.
+
+Retained OpenCode failure `meridian-agy-opencode-extensions-6NiiC4`: the first
+plugin generated a random ID in `chat.headers`. OpenCode invoked that hook again
+on retry, so it generated a second model answer rather than retrieving the saved
+one. Ordinary client checks passed, but the mandatory saved-response assertion
+failed. The correction reads the active assistant-message identity from OpenCode's
+public session API, skips missing/ambiguous steps, and changes IDs for subsequent
+assistant steps. The corrected gate proves that exact failure is fixed. Source
+references: [public plugin hooks](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/plugin/src/index.ts),
+[assistant creation before processing](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/opencode/src/session/prompt.ts),
+and [processor retry lifecycle](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/opencode/src/session/processor.ts).
+
+Direct regression coverage includes partial SSE delivery followed by owner death,
+parallel-batch replay, persisted tool responses after restart without CLI access,
+consumed-result rejection, identity conflicts, concurrent coalescing and waiter
+cancellation/bounds, shared snapshot limits, Unicode argument reconstruction,
+native-grant refusal and both real plugin entrypoints. Existing completed-answer
+snapshots remain readable. The live gate establishes recovery before downstream
+response delivery; it does not establish automatic client retry after partial
+stream delivery or exactly-once actions by arbitrary custom GUIs.
+
+An additional `E2E_AGY_CANCEL_TOOL=1` mode cancels the upstream stream after a
+tool block arrives while a deliberately delayed telemetry observer is active,
+then drops downstream delivery. This exercises CLI cancellation/join before
+returning a saved batch and subsequent completed-result recovery. The observer's
+expected cancellation diagnostic is retained. The normal context-switch telemetry
+assertion only applies without this deliberate owner termination.
+
+A direct regression first reproduced the cleanup race: an exact retry returned
+while the cancelled CLI was still alive when cancellation arrived during telemetry.
+Tracking cancellation independently of the otherwise successful response status
+makes identified retries wait for `run.settled`; the regression now passes.
+Initial cancellation-gate artifact `meridian-agy-opencode-extensions-5FenCH`
+completed the action/result, denial, question and delayed-approval checks, then
+failed a harness assertion expecting `client-context-replay` from the intentionally
+terminated owner. That assertion remains mandatory in the normal gate and is
+excluded only in cancellation mode, which still requires exact saved-response
+identity, one execution and zero HTTP errors. The corrected OpenCode cancellation
+gate, `meridian-agy-opencode-extensions-Unschd`, passed eight checks / 13 requests,
+including exact saved-call recovery and zero HTTP errors. The matching Pi
+cancellation gate, `meridian-agy-pi-extensions-A9s75q`, passed eight checks / 15
+requests with zero HTTP errors. Both used the rebuilt cancellation-join fix. The final local suite passed 4,706
+tests with zero failures across 15 isolated groups; typecheck and Node build passed.
+
 ## Quick Start
 
 ```bash

@@ -12,6 +12,11 @@ import { once } from 'node:events'
 import { preflightFault } from './lib-antigravity-preflight-fault.mjs'
 import { startProxyServer } from '../dist/server.js'
 
+const lostTool = process.env.E2E_AGY_LOST_TOOL === '1'
+const cancelTool = process.env.E2E_AGY_CANCEL_TOOL === '1'
+assert(!cancelTool || lostTool, 'Tool cancellation requires the lost-tool gate')
+let delayedTelemetry = false
+let deliveredTool, replayedTool
 const lostAnswer = process.env.E2E_AGY_LOST_ANSWER === '1'
 const disconnect = process.env.E2E_AGY_DISCONNECT === '1' || lostAnswer
 let completedWire, recoveredWire
@@ -38,7 +43,7 @@ const receipt = `CLIENT_${randomUUID()}`
 const env = { ...process.env }
 for (const key of Object.keys(env)) if (/^(OPENCODE_|MERIDIAN_|CLAUDE_PROXY_|ANTHROPIC_|CLAUDE_|GEMINI_API_KEY|GOOGLE_API_KEY)/.test(key)) delete env[key]
 env.MERIDIAN_EXTENSION_AUDIT = auditPath; env.MERIDIAN_EXTENSION_RECEIPT = receipt
-const report = { disconnect, lostAnswer, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
+const report = { disconnect, lostAnswer, lostTool, cancelTool, client, clientVersion: version(binary), cliVersion: version(executable), modelID, platform: process.platform, node: process.version, passed: [] }
 const requests = [], events = [], apiLog = [], httpErrors = []
 let proxy, relay, child, exited = false, stdout = '', stderr = ''
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -57,7 +62,7 @@ async function until(fn, label, timeout = 180000) {
   throw new Error(`Timeout: ${label}; ${stderr}`)
 }
 try {
-  proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true, pendingToolTimeoutMs: 5000, ...(disconnect ? { statePath: join(root, 'state.sqlite') } : {}) } })
+  proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true, pendingToolTimeoutMs: 5000, ...(cancelTool ? { plugins: [{ name: 'tool-delivery-cleanup', onTelemetry: async () => { if (!delayedTelemetry) { delayedTelemetry = true; await delay(500) } } }] } : {}), ...((disconnect || lostTool) ? { statePath: join(root, 'state.sqlite') } : {}) } })
   if (!proxy.server.listening) await once(proxy.server, 'listening')
   const address = proxy.server.address(); assert(address && typeof address !== 'string')
   const upstream = `http://127.0.0.1:${address.port}`
@@ -67,8 +72,40 @@ try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk)
       const raw = Buffer.concat(chunks).toString('utf8')
       if (raw) { requests.push(JSON.parse(raw)); await writeFile(join(root, 'requests.json'), JSON.stringify(requests, null, 2)) }
-      const response = await fetch(upstream + req.url, { method: req.method, headers: { 'content-type': 'application/json' }, body: raw || undefined, signal: abort.signal })
+      const response = await fetch(upstream + req.url, { method: req.method, headers: { 'content-type': 'application/json', ...(req.headers['idempotency-key'] ? { 'idempotency-key': req.headers['idempotency-key'] } : {}) }, body: raw || undefined, signal: abort.signal })
       if (!response.ok) { const text = await response.clone().text(); httpErrors.push({ status: response.status, text }); console.log('HTTP', response.status, text) }
+      if (lostTool && response.ok && !deliveredTool) {
+        let wire
+        if (cancelTool) {
+          const reader = response.body.getReader(), decoder = new TextDecoder()
+          wire = ''
+          while (!wire.includes('"type":"tool_use"') || !wire.slice(wire.indexOf('"type":"tool_use"')).includes('\n\n')) {
+            const next = await reader.read(); assert(!next.done, 'Tool frame must precede EOF')
+            wire += decoder.decode(next.value, { stream: true })
+          }
+          wire = wire.slice(0, wire.lastIndexOf('\n\n') + 2)
+          await reader.cancel('Injected tool stream loss during telemetry')
+          reader.releaseLock()
+          report.cancelledToolStream = true
+        } else wire = await response.text()
+        const frames = wire.trim().split('\n\n').map(frame => frame.split('\n').find(line => line.startsWith('data: '))).filter(Boolean).map(line => JSON.parse(line.slice(6)))
+        const calls = frames.filter(frame => frame.content_block?.type === 'tool_use').map(frame => frame.content_block)
+        if (calls.length) {
+          assert.equal((await audit()).filter(event => event.event === 'executed').length, 0)
+          const requestId = req.headers['idempotency-key'] || JSON.parse(raw).meridian_request_id
+          assert(requestId, 'Actual client extension must supply the retry identity')
+          deliveredTool = { requestId, message: frames.find(frame => frame.type === 'message_start').message.id, calls }
+          res.destroy()
+          console.log(cancelTool ? 'Cancelled upstream tool delivery during telemetry before client delivery' : 'Injected lost complete tool-call response before client delivery')
+          return
+        }
+        res.writeHead(response.status, { 'content-type': response.headers.get('content-type') }); res.end(wire); return
+      }
+      if (lostTool && deliveredTool && !replayedTool && response.headers.get('x-meridian-response-replayed') === 'true') {
+        const frames = (await response.clone().text()).trim().split('\n\n').map(frame => frame.split('\n').find(line => line.startsWith('data: '))).filter(Boolean).map(line => JSON.parse(line.slice(6)))
+        replayedTool = { requestId: req.headers['idempotency-key'] || JSON.parse(raw).meridian_request_id, message: frames.find(frame => frame.type === 'message_start').message.id, calls: frames.filter(frame => frame.content_block?.type === 'tool_use').map(frame => frame.content_block) }
+        assert.deepEqual(replayedTool, deliveredTool, 'Retry must preserve request, message and tool identities')
+      }
       const latest = raw ? JSON.parse(raw).messages?.at(-1)?.content : undefined
       if (disconnect && !dropped && response.ok && Array.isArray(latest) && latest.some(block => block.type === 'tool_result' && JSON.stringify(block.content).includes(receipt))) {
         assert.equal((await audit()).filter(event => event.event === 'executed').length, 1)
@@ -117,7 +154,7 @@ try {
     env.PI_CODING_AGENT_DIR = config; env.PI_OFFLINE = '1'; env.PI_TELEMETRY = '0'
     await writeFile(join(config, 'models.json'), JSON.stringify({ providers: { 'meridian-agy': { baseUrl, apiKey: 'fixture', api: 'anthropic-messages', models: [{ id: modelID, name: modelID, reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }))
     await writeFile(join(config, 'settings.json'), JSON.stringify({ retry: { enabled: false }, compaction: { enabled: false } }))
-    launch(['--provider', 'meridian-agy', '--model', modelID, '--thinking', 'off', '--mode', 'rpc', '--no-session', '--no-builtin-tools', '--no-extensions', '-e', fileURLToPath(new URL('./fixtures/agy-pi-extension.js', import.meta.url)), '--no-skills', '--no-context-files', '--no-prompt-templates', '--no-themes'])
+    launch(['--provider', 'meridian-agy', '--model', modelID, '--thinking', 'off', '--mode', 'rpc', '--no-session', '--no-builtin-tools', '--no-extensions', '-e', fileURLToPath(new URL('./fixtures/agy-pi-extension.js', import.meta.url)), ...(lostTool ? ['-e', fileURLToPath(new URL('../examples/pi-extension/antigravity-retry.js', import.meta.url))] : []), '--no-skills', '--no-context-files', '--no-prompt-templates', '--no-themes'])
     let buffer = ''
     child.stdout.on('data', value => {
       buffer += value
@@ -186,6 +223,7 @@ try {
     env.OPENCODE_CONFIG_DIR = config; env.OPENCODE_DISABLE_AUTOUPDATE = '1'; env.OPENCODE_SERVER_PASSWORD = randomUUID()
     await mkdir(join(config, 'plugins'))
     await copyFile(new URL('./fixtures/agy-opencode-plugin.js', import.meta.url), join(config, 'plugins', 'fixture.js'))
+    if (lostTool) await copyFile(new URL('../examples/opencode-plugin/antigravity-retry.js', import.meta.url), join(config, 'plugins', 'retry.js'))
     await writeFile(join(config, 'opencode.json'), JSON.stringify({ model: `meridian-agy/${modelID}`, small_model: `meridian-agy/${modelID}`, enabled_providers: ['meridian-agy'], share: 'disabled', permission: { '*': 'deny', question: 'allow', client_receipt: 'ask', client_denied: 'ask', client_blocked: 'allow' }, provider: { 'meridian-agy': { npm: '@ai-sdk/anthropic', options: { baseURL: baseUrl + '/v1', apiKey: 'fixture' }, models: { [modelID]: { name: modelID, limit: { context: 128000, output: 4096 }, temperature: false, reasoning: false, tool_call: true } } } } }))
     launch(['serve', '--hostname', '127.0.0.1', '--port', '0'])
     const server = await until(() => /http:\/\/127\.0\.0\.1:\d+/.exec(stdout)?.[0], 'OpenCode server', 30000)
@@ -256,7 +294,7 @@ try {
     assert.equal((await audit()).filter(e => e.event === 'executed').length, 2)
     mark('real OpenCode delayed approval recovers after CLI expiry with one client execution')
     const telemetry = await (await fetch(upstream + '/telemetry/requests')).json()
-    assert(telemetry.some(entry => entry.continuation === 'client-context-replay'), 'Plugin context change must replay directly, without waiting for expiry/retry')
+    if (!cancelTool) assert(telemetry.some(entry => entry.continuation === 'client-context-replay'), 'Plugin context change must replay directly, without waiting for expiry/retry')
   }
   const results = requests.flatMap(r => r.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(b => b.type === 'tool_result')
   assert(results.some(r => JSON.stringify(r.content).includes(receipt)), 'Private receipt must enter via actual client tool_result')
@@ -270,6 +308,8 @@ try {
     report.preflightAttempts = attempts
     mark('official configuration timeout recovers before any client generation')
   }
+  if (cancelTool) { assert(delayedTelemetry && report.cancelledToolStream); mark('Upstream tool delivery cancelled during telemetry; saved call and client results still recover') }
+  if (lostTool) { assert(replayedTool, 'Actual client must automatically recover the saved tool call'); mark('Lost tool-call response recovered with stable IDs and one approved client execution') }
   if (disconnect) assert(dropped)
   if (lostAnswer) { assert(recoveredWire, 'Client must recover through the saved-answer path'); mark('Lost completed answer replayed with identical ID/content/usage and no new model invocation') }
   assert.deepEqual(httpErrors, [], 'A green client retry must not hide bridge errors')

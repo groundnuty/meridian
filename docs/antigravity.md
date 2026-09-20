@@ -789,8 +789,8 @@ run before matching the validated request.
 
 Matching binds the credential digest, complete history and result, system
 instructions, tools, model, session, execution controls and tool choice. Ordinary
-prompts are not memoized. Answers issuing another client tool call are excluded:
-the bridge cannot know whether that call already executed at the client. Requests
+prompts are not memoized without an explicit request ID. Tool-call responses
+require the identified-request path below. Requests
 with native browser/subagent grants are also excluded. OpenAI routes retain their
 existing Responses storage semantics; `store: false` never opts into this cache.
 
@@ -798,7 +798,8 @@ The separate answer budget is 128 entries, 16 MiB total and 1 MiB per serialized
 snapshot, retained for up to 30 minutes. Oldest entries are evicted; retries do not
 extend retention. Optional `MERIDIAN_AGY_STATE_PATH` persists these answer bodies
 in Meridian's private SQLite file; without it, they disappear on restart. Oversized
-answers still succeed but are not saved. If an answer is missing while its result
+implicit answers still succeed but are not saved. Identified responses exceeding
+the entry limit fail explicitly before any tool call is delivered. If an answer is missing while its result
 ID remains consumed, the retry receives 409. After both ledgers expire or evict
 entries, exactly-once behavior is not guaranteed; clients must keep their history.
 
@@ -810,3 +811,60 @@ ID, text and usage, one audited client execution, and zero HTTP errors:
 E2E_AGY_LOST_ANSWER=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
 E2E_AGY_LOST_ANSWER=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
 ```
+
+
+### Identified retries and lost tool-call responses
+
+For the Antigravity Anthropic Messages route, send a unique `idempotency-key`
+header or `meridian_request_id` body field for each logical model invocation.
+Transport retries must reuse it and resend the identical request. IDs accept
+1–128 ASCII letters, digits, dots, underscores, colons or hyphens; supplying
+conflicting header/body IDs is invalid. The credential digest and ID select the
+snapshot; a changed model, history, tools, instructions or execution controls
+under the same ID receives 409. JSON/SSE mode may change.
+
+Meridian validates and saves an entire tool batch before emitting its first tool
+block. A retry returns the same message ID, tool IDs, arguments and usage without
+another CLI invocation or another response/telemetry observer call. Results for
+those IDs continue normally, including completed-history recovery after the
+original CLI expires or restarts. Once results are being processed or are consumed,
+the old tool response cannot be replayed. Concurrent exact retries wait for the
+original response; cancelling a waiter does not cancel its owner. In-flight
+identities and waiters are each bounded to 128 (waiters per identity).
+
+This shares the existing 128-entry / 16 MiB / 30-minute answer budget and optional
+SQLite persistence; it does not allocate a second response cache. The 1 MiB entry
+limit applies. Ordinary prompts only acquire replay semantics when an ID is
+explicitly provided. Native browser/subagent grants remain incompatible with this
+path; OpenAI routes do not use it. In-flight work is not restored after a crash.
+Expired/evicted entries and client-side execution outside the bridge do not acquire
+an exactly-once guarantee. A custom GUI must track tool execution by tool ID and
+never execute an already completed action merely because it reads a response again.
+
+The repository includes provider-scoped integrations for a provider named
+`meridian-agy`:
+
+- Pi: load [antigravity-retry.js](../examples/pi-extension/antigravity-retry.js)
+  with `pi -e /path/to/meridian/examples/pi-extension/antigravity-retry.js ...`.
+  Its supported payload hook adds an ID once before the SDK's HTTP retries.
+- OpenCode V1: copy [antigravity-retry.js](../examples/opencode-plugin/antigravity-retry.js)
+  into the client's `plugins` directory. The header hook reads the active assistant
+  message through OpenCode's public session API. That message survives processor
+  retries and changes for the next tool round. Missing/ambiguous active steps do
+  not get guessed IDs; a failed metadata read fails explicitly. Other providers
+  are untouched. This integration has been verified on OpenCode 1.18.31.
+
+These helpers cover the demonstrated automatic transport retry before client
+response delivery. They do not add automatic recovery to clients that stop after
+receiving a partial stream. The server can replay saved tool batches for explicit
+exact retries, but arbitrary partial-delivery client behavior is not verified.
+Approvals remain in the client and are never granted by these helpers.
+
+```sh
+E2E_AGY_LOST_TOOL=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_LOST_TOOL=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+The relay consumes a complete tool-call response, drops it before delivery, and
+requires the real client to retry through the saved-response path with the same
+request, message and tool IDs, one approved execution, and zero HTTP errors.

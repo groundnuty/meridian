@@ -7,6 +7,7 @@ import { DEFAULT_PROXY_CONFIG } from "../proxy/types"
 import { parseAgRequest, renderAgPrompt, historyKey, contractKey } from "../proxy/backends/antigravityProtocol"
 
 interface TestReply {
+  id: string
   backend?: string
   stop_reason: string
   stop_sequence?: string
@@ -715,5 +716,107 @@ describe("Antigravity interrupted tool-result continuations", () => {
       runtime.rememberInterruptedContinuation(request)
       expect(runtime.canRetryContinuation(request)).toBe(false)
     }
+  })
+})
+
+
+describe.skipIf(process.platform === "win32")("Antigravity identified tool delivery", () => {
+  it("replays the same tool batch without generation, then rejects replay after its results arrive", async () => {
+    const { send, runtime } = fixture()
+    const request = { ...initial("PARALLEL2"), meridian_request_id: "tool-delivery" }
+    const first = await decode(await send(request))
+    const metrics = runtime.requests.length
+    const second = await send(request)
+    expect(second.headers.get("x-meridian-response-replayed")).toBe("true")
+    expect(await decode(second)).toEqual(first)
+    expect(runtime.requests.length).toBe(metrics)
+    expect((await send({ ...request, max_tokens: 200 })).status).toBe(409)
+    const calls = first.content.filter(block => block.type === "tool_use")
+    expect(calls).toHaveLength(2)
+    const followup = { ...request, meridian_request_id: "after-tools", messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: calls.map(call => ({ type: "tool_result", tool_use_id: call.id, content: "ONCE" })) }] }
+    expect((await decode(await send(followup))).content[0]?.text).toBe("ONCE|ONCE")
+    expect((await send(request)).status).toBe(409)
+    expect((await send(followup)).headers.get("x-meridian-response-replayed")).toBe("true")
+  })
+  it("coalesces concurrent identified requests and does not cancel the owner when a waiter disconnects", async () => {
+    const { send, runtime } = fixture()
+    const request = { ...initial(), meridian_request_id: "concurrent" }
+    const verify = runtime.verifyAccount.bind(runtime)
+    let entered!: () => void, release!: () => void
+    const ready = new Promise<void>(resolve => { entered = resolve })
+    const barrier = new Promise<void>(resolve => { release = resolve })
+    runtime.verifyAccount = async () => { entered(); await barrier; return verify() }
+    const first = send(request)
+    await ready
+    const controller = new AbortController()
+    const cancelled = send(request, controller.signal)
+    controller.abort()
+    expect((await cancelled).status).toBe(499)
+    expect((await send({ ...request, system: "different" })).status).toBe(409)
+    const second = send(request)
+    release()
+    const [a, b] = await Promise.all([first, second])
+    expect(a.status).toBe(200); expect(b.status).toBe(200)
+    expect(await decode(a)).toEqual(await decode(b))
+    expect(runtime.requests).toHaveLength(1)
+  })
+  it("saves the batch before partial SSE delivery and recovers after the original owner dies", async () => {
+    const { send, runtime } = fixture()
+    const request = { ...initial(), meridian_request_id: "partial", stream: true }
+    const response = await send(request), reader = response.body!.getReader()
+    let wire = ""
+    while (!wire.includes('"type":"tool_use"')) {
+      const next = await reader.read(); expect(next.done).toBe(false)
+      wire += new TextDecoder().decode(next.value)
+    }
+    await reader.cancel()
+    const original = [...runtime.runs.values()]
+    for (const run of original) run.abort(new Error("fixture loss"))
+    await Promise.all(original.map(run => run.settled))
+    const replay = await send({ ...request, stream: false })
+    expect(replay.headers.get("x-meridian-response-replayed")).toBe("true")
+    const answer = await decode(replay)
+    expect(wire).toContain(answer.id)
+    const call = answer.content.find(block => block.type === "tool_use")!
+    expect(wire).toContain(call.id!)
+    const result = await send({ ...request, meridian_request_id: "after-partial", stream: false, messages: [...request.messages, { role: "assistant", content: answer.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "RECOVERED" }] }] })
+    expect((await decode(result)).content[0]?.text).toBe("RECOVERED")
+  })
+  it("joins cancellation during telemetry before returning an identified tool retry", async () => {
+    let entered!: () => void, release!: () => void
+    const ready = new Promise<void>(resolve => { entered = resolve })
+    const barrier = new Promise<void>(resolve => { release = resolve })
+    const { send, runtime } = fixture({ maxConcurrent: 1, plugins: [{ name: "telemetry-barrier", onTelemetry: async () => { entered(); await barrier } }] })
+    const request = { ...initial(), meridian_request_id: "cancel-during-observer", stream: true }
+    const response = await send(request)
+    await ready
+    const run = [...runtime.runs.values()][0]!
+    const stop = run.abort.bind(run)
+    let cancellation: Error | undefined
+    run.abort = error => { cancellation = error }
+    await response.body!.cancel()
+    let returned = false
+    const retry = Promise.resolve(send({ ...request, stream: false })).then(result => { returned = true; return result })
+    try {
+      release()
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(cancellation).toBeInstanceOf(Error)
+      expect(returned).toBe(false)
+    } finally {
+      release()
+      stop(cancellation ?? new Error("fixture cleanup"))
+      await run.settled
+    }
+    expect((await retry).headers.get("x-meridian-response-replayed")).toBe("true")
+    expect(runtime.requests).toHaveLength(1)
+  })
+  it("rejects invalid identities and native grants before starting a CLI", async () => {
+    const { send, runtime, server } = fixture()
+    for (const id of ["", "bad id", "x".repeat(129), 123]) expect((await send({ ...initial(), meridian_request_id: id })).status).toBe(400)
+    const conflict = await server.app.fetch(new Request("http://local/v1/messages", { method: "POST", headers: { "idempotency-key": "header" }, body: JSON.stringify({ ...initial(), meridian_request_id: "body" }) }))
+    expect(conflict.status).toBe(400)
+    expect(runtime.runs.size).toBe(0)
+    const native = fixture({ allowNativeSubagents: true })
+    expect((await native.send({ ...initial(), meridian_request_id: "native" })).status).toBe(400)
   })
 })
