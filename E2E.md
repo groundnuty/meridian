@@ -5806,3 +5806,13 @@ fresh later checks, and immediate refusal of unsupported versions, malformed
 configuration, custom providers and paid overage. The first cancellation test
 failed because its fixed delay could expire before fixture startup; the final
 test waits for the fixture's explicit start marker before cancelling.
+
+### CI validation note: OpenCode response buffering
+
+The first buffer commit (`6303bf52`) passed all 4,711 local tests and the actual
+OpenCode partial-stream gate. CI run `35496412050` failed the existing graceful
+shutdown test at its 100-iteration, 1 ms cleanup wait (in-flight count still 1).
+The test observes asynchronous teardown after stream cancellation; it has no
+100 ms product latency requirement. The correction uses a bounded two-second
+wall-clock wait and retains both zero in-flight and revoked-publication assertions.
+This test-only correction does not change production shutdown behavior.
