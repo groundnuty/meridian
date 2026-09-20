@@ -55,7 +55,10 @@ validated configuration response. Both attempts timing out returns an explicit
 failure; no model request is sent by that admission. Command exits, missing
 executables, oversized output, malformed configuration, disallowed providers,
 paid overage and unsupported versions are not retried. Shutdown cancels active
-probes and prevents retry.
+probes and prevents retry. Failed version/configuration/model probes also impose
+a five-second account-check cooldown with HTTP 503 and `Retry-After`; no old
+successful authorization is reused. Configuration refusals and unsupported
+versions still require operator correction.
 
 Diagnostics report reason, attempt, elapsed time, deadline, exit/signal and output
 size without exposing CLI configuration contents. A recovered timeout is logged.
@@ -566,6 +569,11 @@ and a multi-megabyte image request through production Node and live CLI vision.
 
 ## What the remaining limits mean
 
+The [support and recovery checklist](antigravity-support.md) separates supported
+flows, adaptations, current exclusions and the work needed to close each gap.
+It includes recovery instructions and practical execution budgets.
+
+
 | Control | Meaning | What is lost through the current CLI |
 | --- | --- | --- |
 | Hard `max_tokens` | Enforce an exact upper bound on generated tokens | The requested limit is advisory. A long answer or tool loop can use more quota and time than that number suggests. Response byte limits and process deadlines remain enforced. |
@@ -884,7 +892,13 @@ This shares the existing 128-entry / 16 MiB / 30-minute answer budget and option
 SQLite persistence; it does not allocate a second response cache. The 1 MiB entry
 limit applies. Ordinary prompts only acquire replay semantics when an ID is
 explicitly provided. Native browser/subagent grants remain incompatible with this
-path; OpenAI routes do not use it. In-flight work is not restored after a crash.
+path; OpenAI routes do not use it. In-flight work is not restored after a crash. With `statePath`, a separate
+bounded hash-only journal records up to 128 unfinished identified requests for
+30 minutes. A restart with no saved response returns an actionable HTTP 409
+instead of automatically generating again; changed payloads retain the identity
+conflict. Cleanly joined requests release their guard. Admission refuses to evict
+unresolved guards when the journal is full. Saved answers remain recoverable even
+if the process died before releasing its guard.
 Expired/evicted entries and client-side execution outside the bridge do not acquire
 an exactly-once guarantee. A custom GUI must track tool execution by tool ID and
 never execute an already completed action merely because it reads a response again.
@@ -950,3 +964,12 @@ E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_AGY_TEXT_STREAM=1 E2E_CLIENT=open
 The relay sends tool blocks, waits 250 ms, records actual executions, then severs
 the connection before `message_delta`/`message_stop`. The gate requires no
 execution before the disconnect and normal approval/result recovery afterward.
+
+### Local media provenance
+
+Local Whisper transcription includes estimated SRT segment timestamps. Video
+sampling selects the first frame and subsequent frames at least ten seconds
+apart (up to 12 frames). Each frame carries its measured source timestamp from
+ffmpeg; times are not inferred from image numbering. These references help
+locate content but do not establish native citations, perfect transcription,
+continuous motion understanding or coverage of brief events between samples.

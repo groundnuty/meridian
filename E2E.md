@@ -6034,3 +6034,48 @@ The final production code passes all **4,733 tests across 15 isolated groups**,
 with zero failures (`/tmp/agy-provider-setup-final3-tests.log`), root typecheck,
 Node build and desktop typecheck/build. The subsequent health-gate correction
 affects only the live harness, and this final entry only updates documentation.
+
+
+## Antigravity recovery and media provenance hardening (2026-09-20)
+
+The new `node scripts/e2e-antigravity-interruption.mjs` gate uses a real official
+CLI behind an audited wrapper and a separate Node service process. It injects
+one read-only configuration exit, checks 503/Retry-After and no new probes during
+the five-second cooldown, then requires fresh successful official validation.
+It kills the service during visible real-model text, joins its owned CLI groups,
+restarts with the same SQLite file and checks that an exact identified retry gets
+409 before any probe/generation. A deliberately new turn then succeeds. This is
+uncertain-outcome protection, not native active-process restoration or durable
+exactly-once client tool execution. The final successful artifact is
+`meridian-agy-interruption-CsBNUk` (three checks), repeating the earlier
+`meridian-agy-interruption-I4njOB` acceptance after tightening fixture cleanup.
+
+Actual Pi 0.72.1 gate `meridian-agy-pi-extensions-LDRYAi` passes seven checks and
+15 requests: approvals, argument transformation, denial, answered/cancelled
+questions, dynamic tools, delayed approval after CLI expiry and a lost complete
+tool response recovered with original IDs and one execution. This run uses the
+existing explicit extension-loading path; it is not new Pi setup acceptance.
+
+Actual OpenCode V1 1.18.31 gate `meridian-agy-opencode-extensions-01Xkb0` passes
+ten checks / 17 requests with zero HTTP errors, using the built setup CLI and
+normal bundled plugin discovery. It verifies incremental text and cache-only
+prefix recovery, approvals/denials/questions, delayed approval, stable tool IDs
+and zero executions before a severed partial tool stream is recovered.
+
+The strengthened media gate passes PDF, public URL image, timestamped speech,
+a 12-second video with source times 0.000 and 10.000, and numeric-enum schema
+checks through OpenAI Responses. Artifact: `meridian-agy-media-EHqKPS`. Local
+Whisper uses the base model, and ffmpeg records the selected frames' actual
+presentation times. The model returns both timestamps as requested. Audio and
+video remain local adaptations, with no native citation or continuous-video
+claim. An actual `/config` timeout occurred on this run; the existing bounded
+read-only retry recovered, and the run completed without a client HTTP error.
+
+All these live gates use macOS arm64, Node 22.22.3, official agy 1.2.7 and Gemini
+3.8 Flash Low. They do not establish Linux/Windows acceptance. A preliminary
+interruption fixture incorrectly injected the configuration failure before
+service startup (`meridian-agy-interruption-WAY0uX`); startup correctly refused it.
+The fixture now starts the service before injecting the readiness fault. The
+first local cooldown unit check also hit Bun's default five-second test deadline;
+it now allows 15 seconds for its intentional five-second cooldown. Neither
+fixture failure is counted as product acceptance.

@@ -30,7 +30,7 @@ defines the separately opted-in browser/subagent policy; browser MCP uses isolat
 Chrome. `antigravityProcess.ts` contains platform quoting and process termination.
 `antigravityProbe.ts` runs only official version/configuration/model-discovery commands, bounds
 output and deadlines, and joins termination (including forced kill) before one
-timeout retry for configuration or model discovery (never version or ordinary exits). Runtime account validation remains fresh and shared
+timeout retry for configuration or model discovery (never version or ordinary exits). Failed read-only probes impose a five-second account-check cooldown with Retry-After; generation is never retried by this mechanism. Runtime account validation remains fresh and shared
 only among concurrent callers; settings refusals and ordinary command failures
 are never retried or replaced with cached authorization.
 `antigravityOpenai.ts` validates supported OpenAI subsets before shared translation;
@@ -63,8 +63,11 @@ This preserves incremental display without executing an incomplete tool prefix
 and does not alter server request validation or client permissions. Optional `antigravityState.ts` persists
 Meridian-owned records in private SQLite with an exclusive lifetime owner guard.
 `antigravitySessions.ts` atomically claims exact completed/joined text/client-tool
-native mappings and uses the public CLI conversation flag. In-flight processes
-never enter that durable cache; private CLI transcripts are never read.
+native mappings and uses the public CLI conversation flag. A separate hash-only unfinished-request journal prevents blind re-execution of
+identified Messages requests after an unclean restart when no answer snapshot exists.
+It is bounded to 128 entries/30 minutes, refuses admission instead of eviction,
+and releases guards after joined cleanup. It does not record external tool outcomes.
+In-flight processes never enter that durable session cache; private CLI transcripts are never read.
 `antigravitySetup.ts` owns explicit Pi/OpenCode client configuration, separate from
 server orchestration. The build packages self-contained retry integrations under
 `dist/antigravity-clients`; npm, Nix and Docker installations carry those assets.

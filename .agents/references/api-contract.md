@@ -50,3 +50,12 @@ credential scope and consumed-tool checks apply; a missing snapshot returns 404.
 The header requires an explicit request ID and native grants disabled; invalid
 values and non-Anthropic use are rejected. JSON/SSE selection may change.
 This supports the OpenCode incremental-text recovery integration (#1073).
+
+With Antigravity state persistence, identified Messages requests without a saved
+response after an unclean restart return HTTP 409 with recovery guidance. A
+hash-only unfinished-request journal is bounded to 128 entries/30 minutes; clean
+cleanup removes entries, and full admission returns 429 rather than evicting an
+unresolved guard. This is not active-process restoration or client-tool execution
+journaling. Failed official read-only probes impose a five-second readiness
+cooldown with HTTP 503 and Retry-After. Both changes are within #1073's recovery
+and failure-handling scope.

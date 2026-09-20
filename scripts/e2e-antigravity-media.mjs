@@ -32,7 +32,7 @@ try {
     await writeFile(join(root, name + '.json'), JSON.stringify({ status: response.status, answer }, null, 2))
     assert.equal(response.status, 200, JSON.stringify(answer))
     const output = openai ? answer.output.filter(item => item.type === "message").flatMap(item => item.content).map(part => part.text).join("") : answer.content.filter(block => block.type === "text").map(block => block.text).join("")
-    assert(output.toLowerCase().includes(expected.toLowerCase()), JSON.stringify(answer))
+    for (const value of Array.isArray(expected) ? expected : [expected]) assert(output.toLowerCase().includes(value.toLowerCase()), JSON.stringify(answer))
     report.passed.push(name); console.log('PASS', name)
   }
   const code = 'PDF_' + randomUUID().slice(0, 8).toUpperCase()
@@ -43,11 +43,11 @@ try {
   const audio = join(root, 'speech.aiff'), wave = join(root, 'speech.wav')
   command('say', ['-o', audio, 'The delivery code is maple river orange.'])
   command('ffmpeg', ['-v', 'error', '-i', audio, '-ar', '16000', '-ac', '1', wave])
-  await send('audio-transcript', [{ type: 'text', text: 'Return only the three-word delivery code spoken in the attachment.' }, { type: 'audio', source: { type: 'base64', media_type: 'audio/wav', data: (await readFile(wave)).toString('base64') } }], 'maple river orange')
+  await send('audio-transcript', [{ type: 'text', text: 'Return the three-word delivery code spoken in the attachment, followed by the first SRT start timestamp exactly as written.' }, { type: 'audio', source: { type: 'base64', media_type: 'audio/wav', data: (await readFile(wave)).toString('base64') } }], ['maple river orange', '00:00:00,000'])
   const image = await createImageFixture(root, 'video-code')
   const video = join(root, 'clip.mp4')
-  command('ffmpeg', ['-v', 'error', '-loop', '1', '-i', image.path, '-t', '2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', video])
-  await send('video-frames', [{ type: 'text', text: 'Return only the six characters visibly printed in the video.' }, { type: 'video', source: { type: 'base64', media_type: 'video/mp4', data: (await readFile(video)).toString('base64') } }], image.expected)
+  command('ffmpeg', ['-v', 'error', '-loop', '1', '-i', image.path, '-t', '12', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', video])
+  await send('video-frames', [{ type: 'text', text: 'Return the six characters visibly printed in the video, followed by the source times of both supplied frames exactly to three decimal places.' }, { type: 'video', source: { type: 'base64', media_type: 'video/mp4', data: (await readFile(video)).toString('base64') } }], [image.expected, '0.000', '10.000'])
   await send('numeric-enum-schema', 'Return count 2 in the required JSON schema.', '"count":2', { stop_sequences: ['NEVER_MATCH'], output_config: { format: { type: 'json_schema', schema: { type: 'object', properties: { count: { type: 'integer', enum: [1, 2] } }, required: ['count'], additionalProperties: false } } } })
 } catch (error) { report.error = String(error); throw error }
 finally { await proxy?.close(); await writeFile(join(root, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2)) }

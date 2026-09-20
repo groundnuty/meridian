@@ -54,7 +54,7 @@ export class AgAttachments {
           await chmod(frame, 0o600)
           this.reserve((await stat(frame)).size)
           this.paths.add(frame)
-          result.push({ type: "text", text: `Video sampled frame ${index + 1}: use view_file to inspect exactly ${frame}` })
+          result.push({ type: "text", text: `Video sampled frame ${index + 1} at source time ${media.frameTimes[index]!.toFixed(3)} seconds: use view_file to inspect exactly ${frame}` })
         }
       } else if (block.type === "document") {
         const bytes = block.source.type === "text" ? Buffer.from(block.source.data) : Buffer.from(block.source.data, "base64")

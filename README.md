@@ -136,6 +136,7 @@ its corresponding client. [Plugin guide →](docs/plugins.md)
 | [Agent setup](docs/agents.md) | Client configuration and compatibility notes |
 | [Configuration](docs/configuration.md) | CLI, environment variables, endpoints and API-key protection |
 | [Antigravity & providers](docs/antigravity.md) | Subscription-account CLI backend, tools, images and structured output |
+| [Antigravity support & recovery](docs/antigravity-support.md) | Supported flows, current exclusions, recovery steps and practical budgets |
 | [Accounts & profiles](docs/profiles.md) | Sign-in, multiple accounts and session routing |
 | [Deployment](docs/deployment.md) | Docker, Nix and headless services |
 | [Plugins](docs/plugins.md) | Official packages and plugin configuration |

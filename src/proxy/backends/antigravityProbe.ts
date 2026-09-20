@@ -11,7 +11,7 @@ interface ProbeOptions {
   timeoutMs?: number
   killGraceMs?: number
 }
-class ProbeFailure extends Error {
+export class ProbeFailure extends Error {
   constructor(readonly reason: Failure, message: string) { super(message) }
 }
 

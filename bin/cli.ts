@@ -51,6 +51,9 @@ Environment variables:
   MERIDIAN_HOST                     Host to bind to (default: 127.0.0.1)
   MERIDIAN_BACKEND                  claude (default), antigravity, or combined
   MERIDIAN_AGY_STATE_PATH           Optional bounded persistent state file
+  MERIDIAN_AGY_TURN_TIMEOUT_MS      Active CLI turn deadline (default: 300000)
+  MERIDIAN_AGY_TOOL_TIMEOUT_MS      Idle client-tool wait (default: 60000)
+  MERIDIAN_AGY_MAX_CONCURRENT       Maximum CLI processes (default: 4)
   MERIDIAN_AGY_PLUGIN_PATHS         JSON array of Antigravity plugin modules
   MERIDIAN_AGY_GRAMMAR_PYTHON       Local Python with Lark for custom grammars
   MERIDIAN_AGY_PATH                 Official agy executable (default: agy)

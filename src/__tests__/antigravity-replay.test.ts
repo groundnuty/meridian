@@ -21,6 +21,44 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 function directory() { const root = mkdtempSync(join(tmpdir(), 'agy-answer-test-')); cleanup.push(() => rmSync(root, { recursive: true, force: true })); return root }
 
 describe('Antigravity completed answer storage', () => {
+  it('persists unfinished identities across restart and refuses blind replay without storing prompts', () => {
+    const path = join(directory(), 'state.sqlite')
+    let state = new AgState(path)
+    new AgCompletedAnswers(state).claim(request(), 'owner', 'unfinished')
+    expect(state.list('unfinished-requests').join('')).not.toContain('PRIVATE_RECEIPT')
+    state.close()
+    state = new AgState(path); cleanup.push(() => state.close())
+    const store = new AgCompletedAnswers(state)
+    expect(() => store.claim(request(), 'owner', 'unfinished')).toThrow('outcome is uncertain')
+    expect(() => store.claim({ ...request(), model: 'changed' }, 'owner', 'unfinished')).toThrow('different request')
+    const release = store.claim(request(), 'other', 'unfinished')
+    release()
+    expect(state.records('unfinished-requests')).toHaveLength(1)
+  })
+  it('keeps saved responses recoverable even if the owner dies before releasing its claim', () => {
+    const path = join(directory(), 'state.sqlite')
+    let state = new AgState(path)
+    const original = new AgCompletedAnswers(state)
+    original.claim(request(), 'owner', 'saved')
+    original.put(request(), 'owner', answer, 'saved')
+    state.close()
+    state = new AgState(path); cleanup.push(() => state.close())
+    expect(new AgCompletedAnswers(state).get(request(), 'owner', 'saved')).toEqual(answer)
+  })
+  it('releases cleanly joined requests and never evicts unresolved guards for admission', () => {
+    const state = new AgState(join(directory(), 'state.sqlite')); cleanup.push(() => state.close())
+    const store = new AgCompletedAnswers(state)
+    const release = store.claim(request(), 'owner', 'clean')
+    release(); release()
+    store.claim(request(), 'owner', 'clean')()
+    expect(state.records('unfinished-requests')).toHaveLength(0)
+    for (let i = 0; i < 128; i++) new AgCompletedAnswers(state).claim(request(), 'owner', `pending-${i}`)
+    expect(() => new AgCompletedAnswers(state).claim(request(), 'owner', 'overflow')).toThrow('journal is full')
+    expect(() => new AgCompletedAnswers(state).claim(request(), 'owner', 'pending-0')).toThrow('outcome is uncertain')
+    for (const row of state.records('unfinished-requests')) state.put('unfinished-requests', row.id, row.scope, 'expired', Date.now() - 1, 128, 65536)
+    new AgCompletedAnswers(state).claim(request(), 'owner', 'after-expiry')()
+  })
+
   it('requires exact contract/history/tool choice and credential scope, but allows a transport change', () => {
     const store = new AgCompletedAnswers(), body = request()
     store.put(body, 'owner', answer)

@@ -27,7 +27,7 @@ export function agRequestId(request: AgRequest, headers: Headers): string | unde
 export class AgCompletedAnswers {
   private readonly store: AgResponseStore
   private readonly active = new Map<string, { fingerprint: string; waiters: Set<() => void> }>()
-  constructor(state?: AgState) {
+  constructor(private readonly state?: AgState) {
     this.store = new AgResponseStore({ entries: 128, bytes: 16 * 1024 * 1024, entryBytes: 1024 * 1024, ttlMs: 30 * 60_000 }, undefined, state, 'completed-answers')
   }
   private fingerprint(request: AgRequest) {
@@ -63,12 +63,24 @@ export class AgCompletedAnswers {
     const key = this.key(request, scope, requestId)
     if (this.active.has(key)) throw new AntigravityError('Request already active', 409)
     if (this.active.size >= 128) throw new AntigravityError('Too many identified requests', 429, 'rate_limit_error')
-    const active = { fingerprint: this.fingerprint(request), waiters: new Set<() => void>() }
+    const fingerprint = this.fingerprint(request)
+    const interrupted = this.state?.get('unfinished-requests', key, scope)
+    if (interrupted) {
+      if (interrupted !== fingerprint) throw new AntigravityError('Request ID was reused with a different request', 409)
+      throw new AntigravityError('This request was interrupted by a service restart without a saved response. Its outcome is uncertain. Review client tool history and any external effects before starting a new turn; do not automatically retry with a new request ID.', 409)
+    }
+    // Refuse admission instead of evicting another unresolved recovery guard.
+    if (this.state && this.state.records('unfinished-requests').length >= 128) throw new AntigravityError('Unfinished request recovery journal is full; retained guards expire after 30 minutes', 429, 'rate_limit_error')
+    this.state?.put('unfinished-requests', key, scope, fingerprint, Date.now() + 30 * 60_000, 128, 65536)
+    const active = { fingerprint, waiters: new Set<() => void>() }
     this.active.set(key, active)
     return () => {
       if (this.active.get(key) !== active) return
-      this.active.delete(key)
-      for (const done of active.waiters) done()
+      try { this.state?.delete('unfinished-requests', key, scope) }
+      finally {
+        this.active.delete(key)
+        for (const done of active.waiters) done()
+      }
     }
   }
 

@@ -1,4 +1,4 @@
-import { readAgProbe } from "./antigravityProbe"
+import { readAgProbe, ProbeFailure } from "./antigravityProbe"
 import { AgGrammars } from "./antigravityGrammar"
 import { AgPlugins } from "./antigravityPlugins"
 import { AgNativeSessions, type AgNativeSnapshot } from "./antigravitySessions"
@@ -520,9 +520,20 @@ export class AntigravityRuntime {
     })().finally(() => { this.quotaCheck = undefined })
     return this.quotaCheck
   }
+  private accountRetryAt = 0
   async verifyAccount(): Promise<void> {
-    this.verifying ??= this.verifyAccountOnce().finally(() => { this.verifying = undefined })
+    if (this.shutdown.signal.aborted) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
+    const retryAfter = Math.ceil((this.accountRetryAt - Date.now()) / 1000)
+    if (retryAfter > 0) throw new AntigravityError(`Antigravity account checks are cooling down after a CLI failure; retry in ${retryAfter} seconds. No model request was sent.`, 503, "api_error", retryAfter)
+    this.verifying ??= this.verifyAccountOnce().catch(error => this.probeFailed(error)).finally(() => { this.verifying = undefined })
     return this.verifying
+  }
+  private probeFailed(error: unknown): never {
+    if (error instanceof ProbeFailure && error.reason !== 'cancelled') {
+      this.accountRetryAt = Date.now() + 5000
+      throw new AntigravityError(error.message + '; retry after 5 seconds. Check that agy --version, agy -p /config and agy models work in your terminal.', 503, "api_error", 5)
+    }
+    throw error
   }
   private async verifyAccountOnce(): Promise<void> {
     if (process.platform === "win32" && !this.options.allowUnverifiedWindows) throw new Error("Windows Antigravity transport is awaiting authenticated live verification; set antigravity.allowUnverifiedWindows only for the platform acceptance gate")
@@ -540,7 +551,7 @@ export class AntigravityRuntime {
     if (Date.now() - this.checkedAt < 60_000) return this.models
     this.checking ??= (async () => {
       await this.verifyAccount()
-      const output = await readAgProbe(this.executable, "models", { env: this.childEnv, signal: this.shutdown.signal })
+      const output = await readAgProbe(this.executable, "models", { env: this.childEnv, signal: this.shutdown.signal }).catch(error => this.probeFailed(error))
       const models = output.split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]!).filter(Boolean)
       if (!models.length) throw new Error("No account models available; sign in using agy")
       this.models = models; this.checkedAt = Date.now(); return models

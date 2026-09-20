@@ -19,7 +19,7 @@ if(process.argv[2] === '--version') { console.log(mode === 'version' ? 'unsuppor
 else {
  const counter=path.join(root,'count'); const count=fs.existsSync(counter)?Number(fs.readFileSync(counter,'utf8')):0;
  fs.writeFileSync(counter,String(count+1));
- if (mode === 'exit') { console.error('PRIVATE_CONFIGURATION'); process.exitCode=2; }
+ if (mode === 'exit' || (mode === 'models-exit' && process.argv[2] === 'models')) { console.error('PRIVATE_CONFIGURATION'); process.exitCode=2; }
  else if (mode === 'overflow') { console.log('PRIVATE_CONFIGURATION'.repeat(60000)); }
  else if (mode === 'always' || ((mode === 'once' || mode === 'stubborn') && count === 0)) {
    fs.writeFileSync(path.join(root,'old-pid'),String(process.pid));
@@ -66,6 +66,32 @@ describe.skipIf(process.platform === 'win32')('Antigravity read-only subscriptio
     await expect(pending).rejects.toThrow('reason=cancelled')
     expect(f.calls()).toHaveLength(1)
     expect(() => process.kill(f.calls()[0]!.pid, 0)).toThrow()
+  })
+  it('cools down failed account probes without spawning or treating old authorization as valid', async () => {
+    const f = fixture('exit'), runtime = new AntigravityRuntime({ executable: f.executable })
+    Object.assign(runtime.childEnv, f.env)
+    try {
+      await expect(runtime.verifyAccount()).rejects.toThrow('reason=exit')
+      const count = f.calls().length
+      runtime.childEnv.AG_PROBE_MODE = 'success'
+      await expect(runtime.verifyAccount()).rejects.toMatchObject({ status: 503, retryAfter: 5 })
+      expect(f.calls()).toHaveLength(count)
+      await new Promise(resolve => setTimeout(resolve, 5050))
+      await runtime.verifyAccount()
+      await runtime.verifyAccount()
+      expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(3)
+    } finally { await runtime.close() }
+  }, 15000)
+  it('also cools down model discovery failures before another account or model probe', async () => {
+    const f = fixture('models-exit'), runtime = new AntigravityRuntime({ executable: f.executable })
+    Object.assign(runtime.childEnv, f.env)
+    try {
+      await expect(runtime.availableModels()).rejects.toThrow('model discovery check failed')
+      const count = f.calls().length
+      await expect(runtime.availableModels()).rejects.toThrow('cooling down')
+      await expect(runtime.verifyAccount()).rejects.toThrow('cooling down')
+      expect(f.calls()).toHaveLength(count)
+    } finally { await runtime.close() }
   })
   it('uses the bounded discovery probe after account validation and coalesces callers', async () => {
     const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
