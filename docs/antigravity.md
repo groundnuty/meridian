@@ -331,6 +331,18 @@ protection is configured, replace `local-placeholder` with that local key.
 
 ### Configure installed clients
 
+Client acceptance is verified with Pi 0.72.1 and OpenCode V1 1.18.31.
+OpenCode 1.2.15 is known to send unsupported `top_p` defaults; upgrade that
+older client rather than expecting sampling controls to be honored.
+
+In the web dashboard or macOS app, open **Providers → Antigravity → Connect Pi
+or OpenCode**. Choose an account model and copy the generated setup command. The
+command uses the current service address and its separate Antigravity route.
+Changing the client's default is opt-in; service authentication takes an
+environment-variable name, never the key value. Run the command in a terminal
+where Meridian is installed, then restart the client.
+
+
 The npm/Nix/Docker build includes both retry integrations; a source checkout is
 not required. With your official CLI signed in and Meridian running with the
 Antigravity tool bridge enabled, add your account model to either client:

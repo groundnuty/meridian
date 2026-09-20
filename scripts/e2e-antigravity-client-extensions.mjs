@@ -13,6 +13,9 @@ import { preflightFault } from './lib-antigravity-preflight-fault.mjs'
 const { startProxyServer } = await import(process.env.E2E_MERIDIAN_SERVER || '../dist/server.js')
 
 const installedSetup = process.env.E2E_AGY_SETUP === '1'
+// Match production's tool wait; a five-second fixture can expire while the
+// real client loads its plugin or recovers a deliberately severed response.
+const pendingToolTimeoutMs = 60_000
 const lostTool = process.env.E2E_AGY_LOST_TOOL === '1'
 const textStream = process.env.E2E_AGY_TEXT_STREAM === '1'
 let textPrefixSent = false, releaseText
@@ -70,7 +73,7 @@ async function until(fn, label, timeout = 180000) {
   throw new Error(`Timeout: ${label}; ${stderr}`)
 }
 try {
-  proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true, pendingToolTimeoutMs: 5000, ...(cancelTool ? { plugins: [{ name: 'tool-delivery-cleanup', onTelemetry: async () => { if (!delayedTelemetry) { delayedTelemetry = true; await delay(500) } } }] } : {}), ...((disconnect || lostTool) ? { statePath: join(root, 'state.sqlite') } : {}) } })
+  proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true, pendingToolTimeoutMs, ...(cancelTool ? { plugins: [{ name: 'tool-delivery-cleanup', onTelemetry: async () => { if (!delayedTelemetry) { delayedTelemetry = true; await delay(500) } } }] } : {}), ...((disconnect || lostTool) ? { statePath: join(root, 'state.sqlite') } : {}) } })
   if (!proxy.server.listening) await once(proxy.server, 'listening')
   const address = proxy.server.address(); assert(address && typeof address !== 'string')
   const upstream = `http://127.0.0.1:${address.port}`
@@ -85,6 +88,9 @@ try {
       if (textStream && !textPrefixSent && response.ok && response.headers.get('content-type')?.includes('text/event-stream') && raw.includes(streamMarker)) {
         const frames = (await response.text()).trim().split('\n\n').map(frame => frame.split('\n').find(line => line.startsWith('data: '))).filter(Boolean).map(line => JSON.parse(line.slice(6)))
         assert(!frames.some(frame => frame.content_block?.type === 'tool_use'))
+        assert.equal(frames.at(-1).type, 'message_stop')
+        report.upstreamText = frames.filter(frame => frame.delta?.type === 'text_delta').map(frame => frame.delta.text).join('')
+        assert.equal(report.upstreamText.split(streamMarker).length - 1, 1, 'Upstream answer must contain the unique marker once')
         const index = frames.findIndex(frame => frame.delta?.type === 'text_delta' && frame.delta.text.length > 1)
         assert(index > 0, 'Real model must supply incremental text')
         const first = frames[index]
@@ -186,10 +192,11 @@ try {
   async function expireApproval() {
     // Simulate a human taking longer than the configured CLI tool wait. The
     // completed client result must recover without asking the client to run twice.
-    await delay(5500)
-    const response = await fetch(upstream + '/health', { signal: AbortSignal.timeout(20000) })
-    assert(response.ok)
-    assert.equal((await response.json()).pendingToolProcesses, 0, 'Pending CLI owner must expire before approval')
+    await until(async () => {
+      const response = await fetch(upstream + '/health', { signal: AbortSignal.timeout(20000) })
+      assert(response.ok)
+      return (await response.json()).pendingToolProcesses === 0
+    }, 'pending CLI owner expires before delayed approval', pendingToolTimeoutMs + 30000)
     assert.equal((await audit()).filter(e => e.event === 'executed').length, 1, 'Waiting for approval must not execute the client tool')
   }
   async function configureInstalledClient() {
@@ -325,6 +332,8 @@ try {
     let allowed = await turn('Call client_receipt exactly once and report its entire returned value.', async api => {
       const request = await until(async () => (await api('/permission')).find(p => p.sessionID === session.id && p.permission === 'client_receipt'), 'permission prompt')
       assert.equal((await audit()).filter(e => e.event === 'executed').length, 0)
+      const health = await (await fetch(upstream + '/health')).json()
+      if (!cancelTool) assert(health.pendingToolProcesses > 0, 'Initial approval must reach a live CLI owner to exercise context replay')
       await api(`/permission/${request.id}/reply`, { reply: 'once' })
     }, disconnect)
     if (disconnect) {
@@ -347,7 +356,7 @@ try {
         } finally { releaseText?.() }
       })
       const text = JSON.parse(streamed).parts.filter(part => part.type === 'text').map(part => part.text).join('')
-      assert.equal(text.trim(), streamMarker, 'Recovered text must not repeat its visible prefix')
+      assert.equal(text.trim(), report.upstreamText.trim(), 'Recovered text must match the actual upstream answer without repeating its visible prefix')
       mark('OpenCode displays text before completion and recovers a disconnected prefix without duplication')
     }
 
@@ -384,6 +393,7 @@ try {
     assert.equal((await audit()).filter(e => e.event === 'executed').length, 2)
     mark('real OpenCode delayed approval recovers after CLI expiry with one client execution')
     const telemetry = await (await fetch(upstream + '/telemetry/requests')).json()
+    await writeFile(join(root, 'telemetry.json'), JSON.stringify(telemetry, null, 2))
     if (!cancelTool) assert(telemetry.some(entry => entry.continuation === 'client-context-replay'), 'Plugin context change must replay directly, without waiting for expiry/retry')
   }
   const results = requests.flatMap(r => r.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(b => b.type === 'tool_result')

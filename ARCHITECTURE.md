@@ -70,6 +70,11 @@ server orchestration. The build packages self-contained retry integrations under
 `dist/antigravity-clients`; npm, Nix and Docker installations carry those assets.
 Setup prepares edits before writing, preserves unrelated settings, rejects malformed
 or conflicting input, creates private backups and uses per-file atomic replacement.
+`telemetry/providerSetup.ts` shares pure command generation and setup presentation
+between the web provider page and desktop. Desktop clipboard requests contain
+choices rather than arbitrary text; the main process validates them against its
+current service/model state before copying through Electron. Browser clipboard
+denial falls back to manual selection. Neither UI executes the generated command.
 Client defaults change only with `--set-default`; model limits are conservative
 client settings, not provider-enforced generation caps.
 `antigravityPlugins.ts` exposes explicit Antigravity request transforms and isolated

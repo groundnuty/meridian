@@ -1,3 +1,4 @@
+import { providerSetupCommand } from '../../../src/telemetry/providerSetup'
 import { providerOverview, type ProviderFilter } from '../../../src/telemetry/providerView'
 import { object, rows, text, number } from './core'
 import { filterLogs, filterRequests, sortProfilesByConfiguredOrder } from './uiData'
@@ -334,6 +335,28 @@ function renderContent() {
     const key = (field.form?.id || field.form?.dataset.adapter || '') + ':' + field.name
     const draft = drafts.get(key)
     if (draft) { field.value = draft.value; if (field instanceof HTMLInputElement) field.checked = draft.checked }
+  })
+  el('content').querySelectorAll<HTMLFormElement>('.provider-client-setup').forEach(form => {
+    const command = form.querySelector<HTMLTextAreaElement>('[data-setup-command]')!
+    const copy = form.querySelector<HTMLButtonElement>('[data-setup-copy]')!
+    const status = form.querySelector<HTMLElement>('[data-setup-status]')!
+    const refresh = () => {
+      const value = (name: string) => form.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)!.value
+      try {
+        command.value = providerSetupCommand(endpoint, form.dataset.setupRoute || '', value('agy-client'), value('agy-model'), value('agy-key-env').trim(), form.querySelector<HTMLInputElement>('[name="agy-default"]')!.checked)
+        copy.disabled = false; status.textContent = ''
+      } catch (error) { command.value = ''; copy.disabled = true; status.textContent = error instanceof Error ? error.message : String(error) }
+    }
+    form.oninput = refresh; form.onchange = refresh; form.onsubmit = event => event.preventDefault()
+    copy.onclick = async () => {
+      try {
+        const value = (name: string) => form.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)!.value
+        await window.meridian.action('copy-client-setup', {client:value('agy-client'), model:value('agy-model'), keyEnv:value('agy-key-env'), setDefault:form.querySelector<HTMLInputElement>('[name="agy-default"]')!.checked})
+        status.textContent = 'Copied'
+      }
+      catch { command.focus(); command.select(); status.textContent = 'Select and copy the command above.' }
+    }
+    refresh()
   })
   el('content').querySelectorAll<HTMLAnchorElement>('a[data-provider-page]').forEach(link => link.onclick = event => { event.preventDefault(); providerFilter = 'claude'; navigate('Usage & accounts') })
   document.getElementById('check-updates')?.addEventListener('click', () => { void action('check-updates') })

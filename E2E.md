@@ -5910,3 +5910,90 @@ were not retained; the CLI cause remains unclassified. This run overlapped the
 Pi gate and full local suite. A separate OpenCode run tests the same extracted
 package without another live client; success there cannot establish a fix for
 this CLI failure.
+
+The serial extracted-package OpenCode run `meridian-agy-opencode-extensions-PejFUy`
+passed eight setup/client checks with zero HTTP errors, including incremental
+text, cache-only partial-tool recovery and delayed approval, but failed the
+separate `client-context-replay` telemetry assertion. Persisted telemetry showed
+new/live/tool-result continuations rather than that label. This does not count
+as a complete gate pass. The fixture's five-second tool deadline can expire
+while the real client initializes or recovers a deliberately interrupted stream.
+The harness now uses the production 60-second wait and requires a live pending
+owner immediately before the first approval. Its later delayed approval polls
+for actual expiry, retaining the separate expiry-recovery assertion; the
+context-replay assertion remains required. Telemetry is saved for inspection.
+
+The production-wait rerun `meridian-agy-opencode-extensions-3n3Kmq` did
+record `client-context-replay` and passed its first installed-client tool/approval
+flow. It also encountered exhausted configuration probes and a model eligibility
+503 reporting that the upstream service was unavailable; those remain failures.
+Its text assertion then failed because the real upstream answer included the
+previous receipt before the requested marker. The saved completed-answer snapshot
+contained that same text, so this was not evidence of duplication by recovery.
+The streaming gate now compares recovered client text against the actual captured
+upstream text, still requires the unique marker exactly once, and preserves the
+zero-HTTP-errors assertion. This run is not counted as a complete pass.
+
+## Provider-screen client setup
+
+After both builds, attach the real macOS app to an owned live service:
+
+```sh
+env -u ELECTRON_RUN_AS_NODE E2E_MERIDIAN_URL=http://127.0.0.1:3457 \
+  E2E_AGY_SETUP_UI_CLIENTS=1 apps/desktop/node_modules/.bin/electron \
+  scripts/e2e-antigravity-setup-ui.cjs
+```
+
+The gate uses disposable desktop/client settings, selects each client and an
+actual account model, checks the native clipboard, executes the copied setup
+command with a temporary configuration directory, and launches the actual Pi and
+OpenCode clients through that service. It also checks opt-in defaults, environment
+references, invalid input and choices surviving refresh. Omit
+`E2E_AGY_SETUP_UI_CLIENTS` only for a UI/configuration check; that is not live model
+acceptance. The generated commands require Meridian on the user's terminal PATH;
+the fixture supplies a shim to the built CLI and does not execute a global install.
+
+The first launch inherited `ELECTRON_RUN_AS_NODE` and failed before app startup;
+the command above removes it. Early attached-app fixtures raced initial navigation;
+they now wait for the controls. `meridian-agy-setup-ui-1Esd9N` then reproduced
+Electron denying browser clipboard permission. The desktop now uses a trusted
+IPC action that rebuilds the command from its service/model state and validated
+choices, then awaits the native clipboard write. General browser permissions
+remain denied. The Electron 44 fixture also now awaits its asynchronous clipboard
+read; the original Promise-versus-string assertion is retained in `LX3nt6`.
+
+The collaborative browser verified the actual service's 14 account models, client
+selection, command copying, opt-in defaults, environment-name validation and
+refresh preservation at 1280×800 and 390×844. No horizontal overflow or browser
+console errors were observed. The initial temporary preview launcher read its
+port before listening; it was corrected to await the listening event before
+browser verification. Phone-width screenshot:
+`browser-screenshot-localhost-mu9k4tsm-3935d2d9.png`.
+
+`meridian-agy-setup-ui-Bsoznb` passed native copying and Pi configuration,
+then the host's Volta shim recursively relaunched under the fixture's isolated
+HOME before any request reached Meridian. All owned fixture process groups were
+terminated. The fixture preserves `VOLTA_HOME`, accepts `E2E_PI_BIN` and
+`E2E_OPENCODE_BIN` for resolved executables, and runs clients in separate bounded
+process groups so timeout cleanup cannot leave descendants behind. The next run
+uses the paths returned by `volta which pi` and `volta which opencode`; this
+environment failure is not a provider/client compatibility failure or a pass.
+
+The first resolved-executable run `meridian-agy-setup-ui-np3lth` passed native
+copy/configuration for both clients and an actual Pi response. `volta which
+opencode` selected an older 1.2.15 installation rather than the PATH-selected
+1.18.31 used by the other gates; that older client sent unsupported `top_p` and
+was rejected with HTTP 400. This is a retained older-client compatibility limit.
+The fixture now records each actual client version and the next run uses
+`/Users/rynfar/.opencode/bin/opencode` (1.18.31). It does not strip or silently
+pretend to honor sampling controls.
+
+**Verified provider setup, 2026-09-20:**
+`meridian-agy-setup-ui-zHi0BF` passed all five desktop/setup/live-client checks.
+Both copied commands configured their disposable client directories; actual
+Pi 0.72.1 and OpenCode 1.18.31 returned their requested markers through the
+official agy-backed service using Gemini 3.8 Flash low. Native clipboard contents
+matched the displayed commands, choices survived refresh and invalid environment
+input disabled copying. Desktop/client Node was the app's 22.23.2; the live service
+used Node 22.22.3, agy 1.2.7 and macOS arm64. Screenshot: `desktop-setup.png`.
+The desktop build/typecheck and thirteen focused provider/command tests pass.

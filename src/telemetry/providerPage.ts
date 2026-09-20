@@ -1,3 +1,4 @@
+import { providerSetupJs } from './providerSetup'
 import { themeCss, profileBarCss, profileBarHtml, profileBarJs } from './profileBar'
 import { providerViewCss } from './providerView'
 
@@ -13,7 +14,15 @@ async function loadProviders() {
     if (!response.ok) throw new Error(response.status === 401 ? 'Authentication required to view provider usage.' : 'Provider data is unavailable. Retrying shortly.');
     var html = await response.text();
     var target = document.getElementById('provider-content');
-    if (target.innerHTML !== html && !target.contains(document.activeElement)) target.innerHTML = html;
+    if (target.innerHTML !== html && !target.contains(document.activeElement)) {
+      var drafts = {};
+      target.querySelectorAll('.provider-client-setup [name]').forEach(function(field) { drafts[field.name] = {value:field.value, checked:field.checked}; });
+      var opened = Array.from(target.querySelectorAll('details[open][data-detail]')).map(function(detail) { return detail.dataset.detail; });
+      target.innerHTML = html;
+      target.querySelectorAll('.provider-client-setup [name]').forEach(function(field) { var draft = drafts[field.name]; if (draft) { field.value = draft.value; if (field.type === 'checkbox') field.checked = draft.checked; } });
+      target.querySelectorAll('details[data-detail]').forEach(function(detail) { detail.open = opened.includes(detail.dataset.detail); });
+      refreshProviderSetups();
+    }
     document.getElementById('provider-error').textContent = '';
   } catch(error) { document.getElementById('provider-error').textContent = error.message; }
   finally { loading = false; }
@@ -24,6 +33,7 @@ document.getElementById('provider-content').addEventListener('click', function(e
   selected = button.dataset.provider; location.hash = selected;
   document.getElementById('provider-content').focus(); button.blur(); loadProviders();
 });
+${providerSetupJs}
 loadProviders();setInterval(loadProviders,10000);
 ${profileBarJs}
 </script></body></html>`
