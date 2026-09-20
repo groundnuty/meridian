@@ -11,6 +11,39 @@ and subagents have separate operator opt-ins. Linux remains preview; Windows
 transport has fixture coverage but needs authenticated platform verification.
 Antigravity's harness instructions remain in effect and `max_tokens` is advisory.
 
+## Preview availability
+
+Antigravity is currently published on
+[`feat/antigravity-backend`](https://github.com/rynfar/meridian/tree/feat/antigravity-backend)
+in [PR #1074](https://github.com/rynfar/meridian/pull/1074), not in the current npm
+release. Follow the [source build instructions](../README.md#try-antigravity).
+When running from that checkout, substitute `node dist/cli.js` for `meridian`
+in the commands below. Do not replace an existing released installation just to
+try the preview; run it on a separate port.
+
+## Feature status
+
+Validated on macOS arm64 with agy **1.2.7**, Pi **0.72.1** and OpenCode V1
+**1.18.31**. [E2E.md](../E2E.md) records the actual-client evidence.
+
+| Area | Available in this branch |
+| --- | --- |
+| Coding | Incremental text, tool/result loops, parallel batches, approvals, questions and cancellation |
+| Client extensions | Tested Pi/OpenCode plugins and client-owned delegation |
+| Output | Model/effort selection, forced tools and validated JSON schemas |
+| APIs | Anthropic Messages, OpenAI Chat Completions and the documented Responses subset |
+| Attachments | Images/public HTTPS images; local document, speech and video adapters |
+| Continuity | Warm reuse, eligible completed-session restoration, history replay and bounded saved-answer recovery |
+| Management | Web/macOS provider setup, separate status/quotas and shared activity/navigation |
+| Native tools | Browser/subagents through separate explicit grants |
+
+**Unfinished:** active-task reattachment, automatic uncertain-action reconciliation,
+additional client/native-plugin contracts and authenticated Linux/Windows testing.
+Exact generation budgets, sampling controls and some native media/reasoning
+semantics depend on capabilities the official CLI does not expose. See the
+[complete support and recovery checklist](antigravity-support.md) for alternatives
+and the requirements to close each gap.
+
 ## Start
 
 Install the official Antigravity CLI and sign in by running `agy` interactively.
@@ -346,7 +379,7 @@ environment-variable name, never the key value. Run the command in a terminal
 where Meridian is installed, then restart the client.
 
 
-The npm/Nix/Docker build includes both retry integrations; a source checkout is
+Builds from this branch include both retry integrations; a source checkout is
 not required. With your official CLI signed in and Meridian running with the
 Antigravity tool bridge enabled, add your account model to either client:
 

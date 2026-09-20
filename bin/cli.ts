@@ -19,7 +19,7 @@ if (args.includes("--version") || args.includes("-v")) {
 if (args.includes("--help") || args.includes("-h")) {
   console.log(`meridian v${version}
 
-Local Anthropic API powered by your Claude Max subscription.
+Local API bridge for Claude and Antigravity subscriptions.
 
 Usage: meridian [command] [options]
 

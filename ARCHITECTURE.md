@@ -1,6 +1,6 @@
 # Architecture
 
-A local proxy that bridges Anthropic- and OpenAI-compatible clients to the Claude Agent SDK. This document defines the module structure, dependency rules, and design decisions.
+A local proxy that bridges supported Anthropic- and OpenAI-compatible clients to Claude through the Agent SDK or Antigravity through the official agy CLI. This document defines the module structure, dependency rules, and design decisions.
 
 ## Request Flow
 

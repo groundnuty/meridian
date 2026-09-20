@@ -22,6 +22,28 @@ The validated CLI version is **1.2.7**. The tested clients are **Pi 0.72.1** and
 
 These are specific supported flows, not universal API or plugin compatibility.
 
+## Unfinished work
+
+This is a published branch preview, not a released npm feature. Use the
+[source installation](../README.md#try-antigravity) and the exact tested versions
+above when reproducing a problem.
+
+The remaining engineering and acceptance work is:
+
+- **Crash reconciliation:** a client-facing workflow to inspect uncertain tool
+  outcomes and decide what to resume. Saved answers and conflict guards exist;
+  automatic reconciliation and active CLI reattachment do not.
+- **Additional contracts:** adapters and actual-client tests for more native
+  plugins, hosted-tool/file semantics and client versions. Current compatibility
+  applies to the documented subset.
+- **Platform acceptance:** authenticated Linux and Windows runs with the actual
+  CLI and clients. Fixture tests alone do not establish support.
+- **Release:** review, merge and release the branch. Installing the current npm
+  version does not include this backend.
+
+Other gaps require new official CLI capabilities or cooperation from executing
+tools. They are listed below rather than treated as promised wrapper features.
+
 ## What cannot be supported right now
 
 | Capability | Current behavior / alternative | What would close the gap |

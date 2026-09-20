@@ -1,7 +1,7 @@
 {
   "name": "@rynfar/meridian",
   "version": "1.73.0",
-  "description": "Local Anthropic API powered by your Claude Max subscription. One subscription, every agent.",
+  "description": "Use Claude and Antigravity subscriptions with Pi, OpenCode and other coding clients. Local API bridge, usage dashboard and optional Mac app.",
   "type": "module",
   "main": "./dist/server.js",
   "types": "./dist/proxy/server.d.ts",
@@ -81,7 +81,12 @@
     "open-webui",
     "llm",
     "coding-assistant",
-    "opencode-claude-max-proxy"
+    "opencode-claude-max-proxy",
+    "antigravity",
+    "google-antigravity",
+    "gemini",
+    "openai-compatible",
+    "ai-agents"
   ],
   "repository": {
     "type": "git",

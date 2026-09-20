@@ -30,7 +30,7 @@ linearGradient (vertical): #58a6ff → #bc8cff
 **Wordmark:** `MERIDIAN`, uppercase, weight 700, generous letter-spacing
 (2px at header size, 10px at banner size), in `--text`.
 
-**Tagline:** “Harness Claude, your way.”
+**Tagline:** “Claude & Antigravity, in your tools.”
 
 **Asset inventory** (change the mark → update ALL of these together):
 
