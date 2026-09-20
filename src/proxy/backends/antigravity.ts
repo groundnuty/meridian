@@ -125,6 +125,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     if (replayOnly !== null && (replayOnly !== "true" || !requestId || !canSaveAnswer)) throw new AntigravityError("Cache-only recovery requires an identified Anthropic request with native grants disabled")
     if (requestId && !canSaveAnswer) throw new AntigravityError("Identified retries require native browser/subagent grants to be disabled")
     await completedAnswers.wait(body, scope, requestId, request.signal)
+    if (runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
     const saved = canSaveAnswer ? completedAnswers.get(body, scope, requestId) : undefined
     if (saved) {
@@ -362,6 +363,6 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     beginDrain: () => { runtime.draining = true },
     forceAbortInFlight: () => { for (const run of runtime.runs.values()) run.abort(new Error("Backend shutting down")) },
     getInFlightCount: () => [...runtime.runs.values()].filter(run => run.active).length,
-    closeBackend: async () => { try { await responseJobs.close(); await runtime.close() } finally { responses.clear(); completedAnswers.clear(); runtime.state?.close() } },
+    closeBackend: async () => { try { await responseJobs.close(); await runtime.close() } finally { await completedAnswers.drain(); responses.clear(); completedAnswers.clear(); runtime.state?.close() } },
   }
 }

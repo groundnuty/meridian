@@ -6079,3 +6079,13 @@ The fixture now starts the service before injecting the readiness fault. The
 first local cooldown unit check also hit Bun's default five-second test deadline;
 it now allows 15 seconds for its intentional five-second cooldown. Neither
 fixture failure is counted as product acceptance.
+
+
+Final shutdown acceptance: `meridian-agy-interruption-QltEfA` passes four checks
+on the same actual Node/CLI/model/platform. It additionally starts graceful
+shutdown while a real request's telemetry observer is running, verifies the
+answer completes, restarts again and retrieves the identical saved answer
+without a new probe or model invocation for that retry. A direct HTTP regression
+holds the observer open and asserts SQLite remains open until the identified
+request releases its guard. Backend shutdown now joins those finalizers and
+rejects newly awakened retries once draining begins.

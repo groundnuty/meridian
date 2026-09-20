@@ -30,7 +30,7 @@ const host = join(root, 'host.mjs')
 await writeFile(host, `
 import {startProxyServer} from ${JSON.stringify(new URL('../dist/server.js', import.meta.url).href)};
 import {once} from 'node:events';
-const proxy=await startProxyServer({backend:'antigravity',port:0,silent:true,antigravity:{executable:${JSON.stringify(executable)},statePath:${JSON.stringify(join(root, 'state.sqlite'))}}});
+const proxy=await startProxyServer({backend:'antigravity',port:0,silent:true,antigravity:{executable:${JSON.stringify(executable)},statePath:${JSON.stringify(join(root, 'state.sqlite'))},plugins:[{name:'shutdown-observer',onTelemetry:async()=>{process.send({telemetry:true});await new Promise(resolve=>setTimeout(resolve,500))}}]}});
 if(!proxy.server.listening) await once(proxy.server,'listening');
 process.send({url:'http://127.0.0.1:'+proxy.server.address().port});
 process.on('message',async message=>{if(message==='close'){await proxy.close();process.exit(0)}});
@@ -106,11 +106,28 @@ try {
   assert(rejection.includes('outcome is uncertain'), rejection)
   assert.equal((await calls()).length, beforeRetry, 'Uncertain replay must not spawn even a CLI probe')
   mark('real CLI generation interrupted by process death; durable guard rejects blind replay before dispatch')
-  const next = await fetch(url + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'reviewed-new-turn' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply exactly RECOVERED' }] }), signal: AbortSignal.timeout(180000) })
-  const result = await next.json()
-  assert.equal(next.status, 200, JSON.stringify(result))
+  const nextBody = JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply exactly RECOVERED' }] })
+  const options = { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'reviewed-new-turn' }, body: nextBody }
+  const observing = once(child, 'message', { signal: AbortSignal.timeout(180000) })
+  const pending = fetch(url + '/v1/messages', { ...options, signal: AbortSignal.timeout(180000) }).then(response => ({ response }), error => ({ error }))
+  const [event] = await observing
+  assert.equal(event.telemetry, true)
+  const closing = stop()
+  const outcome = await pending
+  assert(outcome.response, String(outcome.error))
+  const result = await outcome.response.json()
+  assert.equal(outcome.response.status, 200, JSON.stringify(result))
   assert.equal(result.content.map(block => block.text || '').join('').trim(), 'RECOVERED')
-  mark('explicit new turn works after recovery decision')
+  await closing
+  mark('explicit new turn completes while graceful shutdown joins its telemetry cleanup')
+  url = await start()
+  const probeCount = (await calls()).length
+  const saved = await fetch(url + '/v1/messages', options)
+  assert.equal(saved.status, 200)
+  assert.equal(saved.headers.get('x-meridian-response-replayed'), 'true')
+  assert.deepEqual(await saved.json(), result)
+  assert.equal((await calls()).length, probeCount)
+  mark('joined shutdown retains the completed answer for cache-only generation-free recovery')
 } catch (error) { report.error = String(error); throw error }
 finally {
   await stop()

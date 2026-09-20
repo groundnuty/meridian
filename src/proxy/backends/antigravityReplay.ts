@@ -25,6 +25,7 @@ export function agRequestId(request: AgRequest, headers: Headers): string | unde
 
 /** One budget covers implicit completed-result answers and explicitly identified requests. */
 export class AgCompletedAnswers {
+  private draining?: Promise<void>
   private readonly store: AgResponseStore
   private readonly active = new Map<string, { fingerprint: string; waiters: Set<() => void> }>()
   constructor(private readonly state?: AgState) {
@@ -58,7 +59,13 @@ export class AgCompletedAnswers {
     })
   }
 
+  drain(): Promise<void> {
+    this.draining ??= Promise.all([...this.active.values()].map(active => new Promise<void>(resolve => active.waiters.add(resolve)))).then(() => undefined)
+    return this.draining
+  }
+
   claim(request: AgRequest, scope: string, requestId?: string): () => void {
+    if (this.draining) throw new AntigravityError('Antigravity is shutting down', 503, 'api_error')
     if (!requestId) return () => undefined
     const key = this.key(request, scope, requestId)
     if (this.active.has(key)) throw new AntigravityError('Request already active', 409)

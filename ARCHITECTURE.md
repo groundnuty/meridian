@@ -66,7 +66,9 @@ Meridian-owned records in private SQLite with an exclusive lifetime owner guard.
 native mappings and uses the public CLI conversation flag. A separate hash-only unfinished-request journal prevents blind re-execution of
 identified Messages requests after an unclean restart when no answer snapshot exists.
 It is bounded to 128 entries/30 minutes, refuses admission instead of eviction,
-and releases guards after joined cleanup. It does not record external tool outcomes.
+and releases guards after joined cleanup. Backend shutdown waits for identified
+request finalizers, including bounded telemetry observers, before closing SQLite.
+It does not record external tool outcomes.
 In-flight processes never enter that durable session cache; private CLI transcripts are never read.
 `antigravitySetup.ts` owns explicit Pi/OpenCode client configuration, separate from
 server orchestration. The build packages self-contained retry integrations under

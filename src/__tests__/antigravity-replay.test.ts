@@ -148,6 +148,27 @@ describe('Antigravity completed answer storage', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('Antigravity completed answer HTTP recovery', () => {
+  it('joins identified-request telemetry cleanup before closing durable state', async () => {
+    const statePath = join(directory(), 'state.sqlite')
+    let entered!: () => void, release!: () => void, closed = false
+    const observing = new Promise<void>(resolve => { entered = resolve })
+    const hold = new Promise<void>(resolve => { release = resolve })
+    const runtime = new AntigravityRuntime({ executable: fileURLToPath(new URL('./fixtures/agy-cli.cjs', import.meta.url)), statePath, plugins: [{ name: 'slow', onTelemetry: async () => { entered(); await hold } }] })
+    const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: 'antigravity' }, runtime)
+    cleanup.push(server.closeBackend)
+    const pending = server.app.fetch(new Request('http://local/v1/messages', { method: 'POST', headers: { 'idempotency-key': 'shutdown' }, body: JSON.stringify({ model: 'fixture-model', messages: [{ role: 'user', content: 'hello' }] }) }))
+    await observing
+    const closing = server.closeBackend().then(() => { closed = true })
+    try {
+      await new Promise(resolve => setTimeout(resolve, 30))
+      expect(closed).toBe(false)
+      expect(runtime.state?.records('unfinished-requests')).toHaveLength(1)
+    } finally { release(); await closing }
+    expect((await pending).status).toBe(200)
+    const reopened = new AgState(statePath)
+    try { expect(reopened.records('unfinished-requests')).toHaveLength(0) } finally { reopened.close() }
+  })
+
   it('keeps state open until already-exited workspace cleanup has joined', async () => {
     const runtime = new AntigravityRuntime({ statePath: join(directory(), 'state.sqlite') })
     const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: 'antigravity' }, runtime)
