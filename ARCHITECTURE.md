@@ -53,7 +53,11 @@ extension assigns IDs before SDK retries and retains only a request hash/ID for 
 exact failed-turn retry. New prompts, session operations, changed payloads and
 successful/aborted turns reset that identity. OpenCode's V1 example plugin uses its
 public active assistant-message identity because its processor reruns header hooks
-on retry; a random ID per header-hook invocation would repeat generation. Optional `antigravityState.ts` persists
+on retry; a random ID per header-hook invocation would repeat generation. Its
+provider fetch wrapper buffers SSE until EOF and message_stop (4 MiB, five minutes,
+abortable), preventing the client from executing a tool from a broken response
+prefix. This trades incremental display for complete delivery and does not alter
+server request validation or client permissions. Optional `antigravityState.ts` persists
 Meridian-owned records in private SQLite with an exclusive lifetime owner guard.
 `antigravitySessions.ts` atomically claims exact completed/joined text/client-tool
 native mappings and uses the public CLI conversation flag. In-flight processes

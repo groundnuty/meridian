@@ -501,10 +501,21 @@ the disconnect. Its fixture plugin then changed system instructions from awaitin
 a receipt to having observed one; the next request reused the active assistant ID
 with those changed instructions. Meridian correctly returned 409 (four observed
 attempts), and the client turn failed. The audit and public client session showed
-the completed action. This is not a passing OpenCode recovery gate. Changing the
+the completed action. That pre-buffer run is not a passing OpenCode recovery gate. Changing the
 request ID or weakening fingerprint checks would risk repeating the action.
-Client-side buffering or completed-action reconciliation remains to be implemented
-and verified before claiming OpenCode partial-stream recovery.
+The corrected OpenCode integration buffers delivery in its public provider fetch
+configuration before the client can execute a tool. Initial passing artifact
+`meridian-agy-opencode-extensions-PUmuHx` passed eight checks / 13 requests,
+including zero executions before disconnect, saved-response identity, approval,
+denial, questions and delayed approval, with zero HTTP errors. It uses the same
+fault that failed above; no fingerprint or permission checks were relaxed.
+The final implementation adds cancellation, a five-minute deadline and a 4 MiB
+buffer cap. Final artifact `meridian-agy-opencode-extensions-4poBIb`
+passed all eight checks / 13 requests with zero HTTP errors and zero executions
+before disconnect on the final implementation (OpenCode 1.18.31, agy 1.2.7,
+Gemini 3.8 Flash low, macOS arm64, Node 22.22.3).
+Focused tests cover withheld delivery, broken/truncated streams,
+oversize cancellation, caller abort, and HTTP/nonstreaming pass-through.
 
 ## Quick Start
 

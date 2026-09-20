@@ -864,13 +864,21 @@ a broken stream: it rejects the incomplete assistant turn before executing tools
 then retries the saved response with the same ID. This requires Pi to classify
 the transport error as retryable; it does not repair arbitrary malformed streams.
 
-OpenCode 1.18.31 partial-stream recovery remains unsupported. The live fault test
-observed an approved tool execute before the final message marker. Its plugin
-then changed the retry instructions, and Meridian rejected the changed request
-with 409. Reusing a saved tool response is not proof that a client will avoid
-executing the action twice. Do not work around this by changing the ID or weakening
-request validation. Recovery needs client-side delivery buffering or reconciliation
-with the client's completed tool records, followed by an actual-client fault test.
+OpenCode 1.18.31 now handles the tested partial-stream disconnect through a
+provider-scoped delivery buffer installed by the plugin's supported `config` hook.
+It wraps the configured provider fetch (preserving an existing custom fetch),
+withholds SSE from the client until EOF and a `message_stop` marker, and lets the
+client retry a broken delivery with the same request ID. The buffer is limited to
+4 MiB and five minutes and honors cancellation; HTTP errors and non-SSE responses
+pass through. Other providers are untouched.
+
+This deliberately trades token-by-token display for complete-response delivery
+when this plugin is installed. Without the buffer, the retained live failure
+showed OpenCode executing a tool before a disconnect and then retrying with changed
+instructions. With it, the same fault recovered the saved IDs, zero executions
+before the disconnect, and one approved execution afterward. Request validation
+remains unchanged. This is transport recovery, not durable exactly-once execution
+across a client crash or permission to replay completed actions.
 Approvals remain in the client and are never granted by these helpers.
 
 ```sh
@@ -882,11 +890,11 @@ The relay consumes a complete tool-call response, drops it before delivery, and
 requires the real client to retry through the saved-response path with the same
 request, message and tool IDs, one approved execution, and zero HTTP errors.
 
-To test client-visible partial tool delivery (currently passing for Pi; an
-intentional diagnostic failure for OpenCode):
+To test client-visible partial tool delivery for either supported client:
 
 ```sh
 E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
 ```
 
 The relay sends tool blocks, waits 250 ms, records actual executions, then severs
