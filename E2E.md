@@ -5658,8 +5658,8 @@ and cancelled questions, dynamically registering a tool for the next user turn,
 and delayed approval after the CLI wait expires. OpenCode covers custom plugin
 tools, before/after hooks, permission approval/rejection, system-context changes
 between tool calls, answered/dismissed questions and delayed approval. The gate
-uses a five-second pending-tool timeout and waits longer before the delayed
-approval; the production default is unchanged. Both gates reject any recorded
+uses the production 60-second pending-tool timeout and waits for expiry before
+the delayed approval. Its health observation allows the official probe deadlines. Both gates reject any recorded
 HTTP error, even if a client eventually recovers through retries. OpenCode also
 requires `client-context-replay` telemetry for its changed-context continuation.
 
@@ -5919,8 +5919,8 @@ new/live/tool-result continuations rather than that label. This does not count
 as a complete gate pass. The fixture's five-second tool deadline can expire
 while the real client initializes or recovers a deliberately interrupted stream.
 The harness now uses the production 60-second wait and requires a live pending
-owner immediately before the first approval. Its later delayed approval polls
-for actual expiry, retaining the separate expiry-recovery assertion; the
+owner immediately before the first approval. Its later delayed approval waits for the tool deadline and checks
+actual expiry, retaining the separate expiry-recovery assertion; the
 context-replay assertion remains required. Telemetry is saved for inspection.
 
 The production-wait rerun `meridian-agy-opencode-extensions-3n3Kmq` did
@@ -6016,3 +6016,21 @@ deadline plus termination grace, then makes one health observation with a
 70-second deadline (version plus two configuration probes), instead of polling
 readiness repeatedly. Actual expiry and the zero-client-errors requirement remain
 assertions; the timed-out run is not counted as a full pass.
+
+**Final packaged-client acceptance, 2026-09-20:**
+`meridian-agy-opencode-extensions-0vIaSR` passed all ten checks / 17 requests with
+zero client HTTP errors, using the extracted npm CLI and server, OpenCode
+1.18.31, agy 1.2.7 and Gemini 3.8 Flash low on macOS arm64. Normal plugin
+discovery, approvals/denials, plugin hooks, questions/cancellation, direct
+context replay and expired-owner recovery passed. The public UI received text
+before completion; a severed prefix recovered exactly to the original upstream
+answer. Tool executions before the injected disconnect were zero, saved IDs
+matched and the approved action executed once. The report records
+`cacheOnlyRecovery: true` and `incrementalTextVisible: true`. Earlier CLI/service
+failures remain unresolved; this successful run does not establish their cause
+or guarantee upstream availability.
+
+The final production code passes all **4,733 tests across 15 isolated groups**,
+with zero failures (`/tmp/agy-provider-setup-final3-tests.log`), root typecheck,
+Node build and desktop typecheck/build. The subsequent health-gate correction
+affects only the live harness, and this final entry only updates documentation.
