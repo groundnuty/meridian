@@ -5615,3 +5615,40 @@ checks over 15 HTTP requests; OpenCode
 recorded zero HTTP errors and one client execution for the interrupted action.
 Versions: Pi 0.72.1, OpenCode 1.18.31, official agy 1.2.7, Gemini 3.8 Flash Low,
 Node 22.22.3, macOS arm64. Other platforms remain unverified by these live gates.
+
+### Antigravity bounded configuration-timeout recovery
+
+```sh
+E2E_AGY_PREFLIGHT_TIMEOUT=1 E2E_AGY_DISCONNECT=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_PREFLIGHT_TIMEOUT=1 E2E_AGY_DISCONNECT=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+The earlier read-only two-worker `/config` experiment observed two 20-second
+timeouts in twelve attempts; ten completed with valid configuration envelopes.
+This establishes a timeout failure mode consistent with the production deadline,
+not the internal CLI cause or the cause of every previous preflight 503.
+
+The new live mode uses a disposable executable wrapper that invokes the actual
+official CLI, withholds its first configuration response until the production
+20-second deadline, and forwards subsequent commands normally. Its audit records
+only command categories, PID, time and exit status, never configuration contents.
+The gate requires a fresh successful official `/config` result before any model
+invocation, then exercises the accepted-result disconnect and extension loop.
+Both final runs logged exactly the injected first-attempt timeout, joined its
+process, recovered on retry, and recorded no client HTTP errors:
+
+- Pi `meridian-agy-pi-extensions-4TRoKa`: eight checks, 15 HTTP requests, Pi 0.72.1.
+- OpenCode `meridian-agy-opencode-extensions-DDg66R`: eight checks, 13 HTTP requests,
+  OpenCode 1.18.31.
+
+Both used official agy 1.2.7, Gemini 3.8 Flash Low, Node 22.22.3 and macOS arm64.
+These are injected-timeout recovery tests with real CLI/client generation; they
+do not claim the CLI's underlying intermittent stall is fixed.
+
+Fourteen direct probe tests cover successful timeout retry after join, forced
+termination of an uncooperative process, exhaustion, output bounds/privacy,
+cancellation and shutdown, missing executables, concurrent check sharing and
+fresh later checks, and immediate refusal of unsupported versions, malformed
+configuration, custom providers and paid overage. The first cancellation test
+failed because its fixed delay could expire before fixture startup; the final
+test waits for the fixture's explicit start marker before cancelling.

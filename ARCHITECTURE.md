@@ -28,6 +28,11 @@ generated paths. `antigravityUrl.ts` validates/pins public HTTPS image downloads
 `antigravityMedia.ts` owns local ffmpeg/Whisper adaptation. `antigravityNative.ts`
 defines the separately opted-in browser/subagent policy; browser MCP uses isolated
 Chrome. `antigravityProcess.ts` contains platform quoting and process termination.
+`antigravityProbe.ts` runs only official version/configuration commands, bounds
+output and deadlines, and joins termination (including forced kill) before one
+configuration-timeout retry. Runtime account validation remains fresh and shared
+only among concurrent callers; settings refusals and ordinary command failures
+are never retried or replaced with cached authorization.
 `antigravityOpenai.ts` validates supported OpenAI subsets before shared translation;
 `antigravityOpenaiMedia.ts` preserves original OpenAI attachments while adapting
 them into the common media pipeline. `antigravityResponses.ts` holds bounded,

@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { Readable } from 'node:stream'
 import { once } from 'node:events'
+import { preflightFault } from './lib-antigravity-preflight-fault.mjs'
 import { startProxyServer } from '../dist/server.js'
 
 const disconnect = process.env.E2E_AGY_DISCONNECT === '1'
@@ -16,10 +17,12 @@ let dropped = false
 const client = process.env.E2E_CLIENT || 'pi'
 assert(['pi', 'opencode'].includes(client))
 const binary = client === 'pi' ? process.env.E2E_PI_BIN || 'pi' : process.env.E2E_OPENCODE_BIN || 'opencode'
-const executable = process.env.MERIDIAN_AGY_PATH || 'agy'
-const version = bin => { const r = spawnSync(bin, ['--version'], { encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim() }
+let executable = process.env.MERIDIAN_AGY_PATH || 'agy'
+const version = bin => { const r = spawnSync(bin, ['--version'], { encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return (r.stdout || r.stderr).trim() }
 const root = await mkdtemp(join(tmpdir(), `meridian-agy-${client}-extensions-`))
 console.log(`Artifacts: ${root}`)
+const probeFault = process.env.E2E_AGY_PREFLIGHT_TIMEOUT === '1' ? await preflightFault(root, executable) : undefined
+if (probeFault) executable = probeFault.executable
 const config = join(root, 'config'), project = join(root, 'project'), auditPath = join(root, 'audit.jsonl')
 await mkdir(config); await mkdir(project); await writeFile(auditPath, '')
 const modelID = process.env.E2E_AGY_MODEL || 'gemini-3.8-flash-low'
@@ -238,6 +241,15 @@ try {
   const results = requests.flatMap(r => r.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(b => b.type === 'tool_result')
   assert(results.some(r => JSON.stringify(r.content).includes(receipt)), 'Private receipt must enter via actual client tool_result')
   assert(results.some(r => r.is_error), 'Denial must enter as a client tool error')
+  if (probeFault) {
+    const attempts = (await readFile(probeFault.audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+    assert.equal(attempts.filter(event => event.event === 'config-stall-start').length, 1)
+    const verified = attempts.findIndex(event => event.event === 'config-forwarded' && event.code === 0)
+    const model = attempts.findIndex(event => event.event === 'model-start')
+    assert(verified > 0 && model > verified, 'A fresh official configuration check must succeed before generation')
+    report.preflightAttempts = attempts
+    mark('official configuration timeout recovers before any client generation')
+  }
   if (disconnect) assert(dropped)
   assert.deepEqual(httpErrors, [], 'A green client retry must not hide bridge errors')
   assert.equal(version(executable), report.cliVersion)

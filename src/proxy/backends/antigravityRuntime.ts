@@ -1,3 +1,4 @@
+import { readAgProbe } from "./antigravityProbe"
 import { AgGrammars } from "./antigravityGrammar"
 import { AgPlugins } from "./antigravityPlugins"
 import { AgNativeSessions, type AgNativeSnapshot } from "./antigravitySessions"
@@ -520,26 +521,12 @@ export class AntigravityRuntime {
   }
   private async verifyAccountOnce(): Promise<void> {
     if (process.platform === "win32" && !this.options.allowUnverifiedWindows) throw new Error("Windows Antigravity transport is awaiting authenticated live verification; set antigravity.allowUnverifiedWindows only for the platform acceptance gate")
-    const opts = { env: this.childEnv, timeout: 20_000, maxBuffer: 1024 * 1024, signal: this.shutdown.signal }
-    const probe = async (args: string[]) => {
-      try { return await exec(this.executable, args, opts) }
-      catch (error) {
-        const details = error instanceof Error ? error : new Error(String(error))
-        const code = 'code' in details ? String(details.code) : 'unknown'
-        const signal = 'signal' in details ? String(details.signal) : 'none'
-        const killed = 'killed' in details && details.killed === true
-        throw new Error(`Antigravity ${args[0] === '--version' ? 'version' : 'subscription configuration'} check failed (exit=${code}, signal=${signal}, killed=${killed}); no model request was sent`)
-      }
-    }
-    const [version, config] = await Promise.all([
-      probe(["--version"]),
-      probe(["-p", "/config", "--output-format", "json"]),
-    ])
-    this.cliVersion = version.stdout.trim()
-    // Hooks and stream shapes are security/correctness boundaries. Upgrade only
-    // after the actual CLI passes the live gate; never silently trust a new binary.
+    const options = { env: this.childEnv, signal: this.shutdown.signal }
+    this.cliVersion = (await readAgProbe(this.executable, "version", options)).trim()
+    // Validate the binary before asking it to inspect subscription configuration.
     if (this.cliVersion !== "1.2.7") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build validates agy 1.2.7. Validate a CLI upgrade before updating the compatibility gate.`)
-    const settings = z.object({ command: z.object({ data: z.object({ config: z.object({ customModelsConfig: z.unknown().optional(), modelProvider: z.unknown().optional(), useG1Credits: z.unknown().optional(), gcp: z.unknown().optional() }) }) }) }).parse(JSON.parse(config.stdout)).command.data.config
+    const config = await readAgProbe(this.executable, "configuration", options)
+    const settings = z.object({ command: z.object({ data: z.object({ config: z.object({ customModelsConfig: z.unknown().optional(), modelProvider: z.unknown().optional(), useG1Credits: z.unknown().optional(), gcp: z.unknown().optional() }) }) }) }).parse(JSON.parse(config)).command.data.config
     const customModels = settings.customModelsConfig
     if (customModels && (typeof customModels !== "object" || Object.keys(customModels).length > 0)) throw new Error("Antigravity custom model providers must be disabled for subscription-only access")
     if (settings.modelProvider || settings.useG1Credits || settings.gcp) throw new Error("Antigravity requires default account authentication with paid overage credits disabled; configure agy first")

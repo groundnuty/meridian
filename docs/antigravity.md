@@ -41,6 +41,36 @@ profiles remain specific to Claude.
 When running from a checkout, replace `meridian` with `node dist/cli.js` after
 `npm install` and `npm run build`.
 
+## Configuration-check timeout recovery
+
+Before generation, Meridian verifies the official CLI version and its current
+subscription configuration. Simultaneous checks in one runtime share the same
+in-flight check; later requests validate again. Version validation precedes the
+configuration command.
+
+A `/config` probe has a 20-second deadline. If it times out, Meridian terminates
+and joins it (forcing termination after one second if needed), waits 250 ms, and
+retries that read-only command once. Generation still requires a successful,
+validated configuration response. Both attempts timing out returns an explicit
+failure; no model request is sent by that admission. Command exits, missing
+executables, oversized output, malformed configuration, disallowed providers,
+paid overage and unsupported versions are not retried. Shutdown cancels active
+probes and prevents retry.
+
+Diagnostics report reason, attempt, elapsed time, deadline, exit/signal and output
+size without exposing CLI configuration contents. A recovered timeout is logged.
+This handles a reproduced timeout mode; it does not explain the CLI's internal
+stall or guarantee every historical 503 has the same cause.
+
+The live fault gate withholds the first official `/config` result until the real
+production deadline and requires a fresh successful configuration check before
+any model invocation:
+
+```sh
+E2E_AGY_PREFLIGHT_TIMEOUT=1 E2E_AGY_DISCONNECT=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_PREFLIGHT_TIMEOUT=1 E2E_AGY_DISCONNECT=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
 ## Tool permissions
 
 The tool bridge requires explicit `MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1`. It launches
