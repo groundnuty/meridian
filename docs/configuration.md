@@ -430,19 +430,22 @@ re-write its prompt prefix.
 Identity is resolved in this order:
 
 1. **The adapter's session header**, if the client sends one.
-2. **An id Meridian derives for a client-driven tool loop** — `tool-loop:<hash>`
+2. **An id the adapter reads out of the request body**, for clients that carry
+   one there instead (`claudecode`, `pi`, `letta`).
+3. **An id Meridian derives for a client-driven tool loop** — `tool-loop:<hash>`
    from the loop's own first tool-call id — for a headerless generic OpenAI
    client that resends its whole growing conversation every round (`openai`).
-3. **A conversation fingerprint** — a hash of the opening user message plus the
-   client working directory — when there is neither.
+4. **A conversation fingerprint** — a hash of the opening user message plus the
+   client working directory — when none of the above applies.
 
 The fingerprint is a fallback, not an equivalent. It cannot distinguish two
 concurrent conversations that open with the same text, and it moves if anything
-rewrites the opening message. The derived tool-loop id closes that gap for a
-headerless OpenAI loop: the opening text and working directory alone put two
-concurrent runs of one workflow under a single key, so Meridian anchors on the
-loop's first tool-call id instead — issued per generation, still present in the
-replayed history, and unique to that run.
+rewrites the opening message. It is also blind to identity carried inside a
+`<system-reminder>` block, which is stripped before hashing — that is why Letta,
+whose conversation id lives in exactly such a block, reads the id directly
+rather than relying on the fallback. For a headerless OpenAI tool loop, the
+first tool-call id distinguishes concurrent runs of the same workflow even
+when their opening text and working directory match.
 
 | Adapter | Session identity it reads |
 |---|---|
@@ -452,6 +455,7 @@ replayed history, and unique to that run.
 | `codex` | `x-codex-session` |
 | `crush` | `x-session-id`, then `x-session-affinity` |
 | `jcode` | `x-jcode-session` |
+| `letta` | The conversation id Letta injects into its own user messages (no session header) |
 | `passthrough` (LiteLLM) | `x-litellm-session-id` |
 | `cherry`, `openai` | Inherit OpenCode header handling; a headerless generic OpenAI tool loop additionally gets a derived `tool-loop:<hash>` key, so it resumes instead of packing |
 | `polytoken` | Valid `x-polytoken-session` |
