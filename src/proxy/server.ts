@@ -528,6 +528,22 @@ function plog(message: string): void {
   if (!proxyLogSilent) console.error(message)
 }
 
+/**
+ * MERIDIAN_NO_1M_FALLBACK=1 keeps a request on the [1m] model it asked for.
+ *
+ * By default an Extra Usage refusal or a rate limit on [1m] is retried on the
+ * base model and [1m] is benched, so the client receives a normal answer from
+ * a different variant than it requested. A client that measures what it asked
+ * for needs the refusal instead: with the flag set the refusal reaches the
+ * client (a rate limit still backs off on the same model), nothing is benched,
+ * and this line records the decision in the proxy log.
+ */
+function extendedContextFallbackBlocked(requestId: string, model: string, reason: string): boolean {
+  if (!envBool("NO_1M_FALLBACK")) return false
+  plog(`[PROXY] ${requestId} ${reason} on ${model}; MERIDIAN_NO_1M_FALLBACK is set, so not retrying on ${stripExtendedContext(model)}`)
+  return true
+}
+
 function logUsage(requestId: string, usage: TokenUsage): void {
   plog(`[PROXY] ${requestId} usage: ${formatUsageSummary(usage)}`)
 }
@@ -3764,7 +3780,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   // subsequent requests don't each make one extra failed attempt.
                   // After the hour expires a single probe fires; if the user has
                   // enabled Extra Usage in the meantime it succeeds and the flag clears.
-                  if (isExtraUsageRequiredError(errMsg) && hasExtendedContext(model)) {
+                  if (isExtraUsageRequiredError(errMsg) && hasExtendedContext(model) && !extendedContextFallbackBlocked(requestMeta.requestId, model, "extra usage required")) {
                     const from = model
                     model = stripExtendedContext(model)
                     recordExtendedContextUnavailable(profile.id)
@@ -3835,7 +3851,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
                   // Rate-limit retry: first strip [1m] (free, different tier), then backoff
                   if (isRateLimitError(errMsg)) {
-                    if (hasExtendedContext(model)) {
+                    if (hasExtendedContext(model) && !extendedContextFallbackBlocked(requestMeta.requestId, model, "rate-limited")) {
                       const from = model
                       model = stripExtendedContext(model)
                       // Bench [1m] until the window resets. Without this the next
@@ -4913,7 +4929,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     }
 
                     // Extra Usage required: strip [1m] and record 1-hour cooldown.
-                    if (isExtraUsageRequiredError(errMsg) && hasExtendedContext(model)) {
+                    if (isExtraUsageRequiredError(errMsg) && hasExtendedContext(model) && !extendedContextFallbackBlocked(requestMeta.requestId, model, "extra usage required")) {
                       const from = model
                       model = stripExtendedContext(model)
                       recordExtendedContextUnavailable(profile.id)
@@ -4984,7 +5000,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
                     // Rate-limit retry: first strip [1m] (free, different tier), then backoff
                     if (isRateLimitError(errMsg)) {
-                      if (hasExtendedContext(model)) {
+                      if (hasExtendedContext(model) && !extendedContextFallbackBlocked(requestMeta.requestId, model, "rate-limited")) {
                         const from = model
                         model = stripExtendedContext(model)
                         // Bench [1m] until the window resets. Without this the next

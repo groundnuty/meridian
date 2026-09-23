@@ -7,7 +7,7 @@
  * 3. The error propagates normally when the model is already base
  */
 
-import { describe, it, expect, mock, beforeEach } from "bun:test"
+import { describe, it, expect, mock, beforeEach, spyOn } from "bun:test"
 import { installSdkMock } from "./sdkMock"
 import { installLoggerMock } from "./loggerMock"
 import { installMcpToolsMock } from "./mcpToolsMock"
@@ -414,6 +414,57 @@ describe("Extra usage required fallback", () => {
         if (priorDelay === undefined) delete process.env.MERIDIAN_RATE_LIMIT_BASE_DELAY_MS
         else process.env.MERIDIAN_RATE_LIMIT_BASE_DELAY_MS = priorDelay
       }
+    })
+  })
+
+  describe("MERIDIAN_NO_1M_FALLBACK keeps the requested [1m] model", () => {
+    // Without the flag every case below is served by the base model and the
+    // client cannot tell: the tests above are the red path of this block.
+    async function withFlag(run: () => Promise<void>) {
+      const prior = { flag: process.env.MERIDIAN_NO_1M_FALLBACK, delay: process.env.MERIDIAN_RATE_LIMIT_BASE_DELAY_MS }
+      process.env.MERIDIAN_NO_1M_FALLBACK = "1"
+      process.env.MERIDIAN_RATE_LIMIT_BASE_DELAY_MS = "1"
+      const logged: string[] = []
+      const errSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(" ")) })
+      try {
+        await run()
+        expect(logged.some((line) => line.includes("MERIDIAN_NO_1M_FALLBACK is set, so not retrying on sonnet"))).toBe(true)
+      } finally {
+        errSpy.mockRestore()
+        if (prior.flag === undefined) delete process.env.MERIDIAN_NO_1M_FALLBACK
+        else process.env.MERIDIAN_NO_1M_FALLBACK = prior.flag
+        if (prior.delay === undefined) delete process.env.MERIDIAN_RATE_LIMIT_BASE_DELAY_MS
+        else process.env.MERIDIAN_RATE_LIMIT_BASE_DELAY_MS = prior.delay
+      }
+    }
+
+    it("returns the Extra Usage refusal instead of answering from the base model (non-streaming)", async () => {
+      mockBehavior = "extra_usage_then_succeed"
+      await withFlag(async () => {
+        const response = await post(createTestApp(), { model: "sonnet", stream: false, messages: [{ role: "user", content: "hello" }] })
+        expect(response.status).toBe(500)
+        expect(queryCalls.map((call) => call.model)).toEqual(["sonnet[1m]"])
+      })
+    })
+
+    it("returns the Extra Usage refusal as an error event (streaming)", async () => {
+      mockBehavior = "extra_usage_then_succeed"
+      await withFlag(async () => {
+        const response = await post(createTestApp(), { model: "sonnet", stream: true, messages: [{ role: "user", content: "hello" }] })
+        const events = parseSSE(await response.text())
+        expect(events.some((event) => event.event === "error")).toBe(true)
+        expect(queryCalls.map((call) => call.model)).toEqual(["sonnet[1m]"])
+      })
+    })
+
+    it("backs off on [1m] after a rate limit instead of switching to base, and benches nothing", async () => {
+      mockBehavior = "error_assistant_then_ratelimit"
+      await withFlag(async () => {
+        const response = await post(createTestApp(), { model: "sonnet", stream: false, messages: [{ role: "user", content: "hello" }] })
+        expect(response.status).toBe(200)
+        expect(queryCalls.map((call) => call.model)).toEqual(["sonnet[1m]", "sonnet[1m]"])
+        expect(rateLimitBenches).toEqual([])
+      })
     })
   })
 
