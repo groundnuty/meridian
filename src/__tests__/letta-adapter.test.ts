@@ -143,6 +143,7 @@ describe("extractLettaConversationId", () => {
     expect(extractLettaConversationId(undefined)).toBeUndefined()
     expect(extractLettaConversationId({})).toBeUndefined()
     expect(extractLettaConversationId({ messages: "not an array" })).toBeUndefined()
+    expect(extractLettaConversationId({ messages: [null, 123, []] })).toBeUndefined()
     expect(extractLettaConversationId({ messages: [{ role: "user", content: "hello" }] })).toBeUndefined()
   })
 })

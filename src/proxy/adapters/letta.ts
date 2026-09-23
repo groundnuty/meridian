@@ -86,13 +86,20 @@ export function normalizeLettaConversationId(value: string | undefined): string 
  * duplication is deliberate — a thin adapter stays self-contained rather than
  * reaching into another adapter's module.
  */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 function messageText(content: unknown): string {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return ""
-  return content
-    .filter((block: any) => block?.type === "text" && typeof block.text === "string")
-    .map((block: any) => block.text)
-    .join("\n")
+  const parts: string[] = []
+  for (const block of content) {
+    if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
+      parts.push(block.text)
+    }
+  }
+  return parts.join("\n")
 }
 
 /**
@@ -104,11 +111,12 @@ function messageText(content: unknown): string {
  * the same endpoint.
  */
 export function extractLettaConversationId(body: unknown): string | undefined {
-  const messages = (body as { messages?: unknown })?.messages
+  if (!isRecord(body)) return undefined
+  const messages = body.messages
   if (!Array.isArray(messages)) return undefined
   for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i] as { role?: unknown; content?: unknown } | undefined
-    if (message?.role !== "user") continue
+    const message = messages[i]
+    if (!isRecord(message) || message.role !== "user") continue
     const match = messageText(message.content).match(CONVERSATION_MARKER)
     if (match) return match[1]!.toLowerCase()
   }
