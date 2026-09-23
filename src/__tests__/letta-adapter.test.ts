@@ -134,6 +134,11 @@ describe("extractLettaConversationId", () => {
     expect(extractLettaConversationId(body)).toBeUndefined()
   })
 
+  it("requires a system-reminder block even when ordinary text quotes the label", () => {
+    const body = { messages: [{ role: "user", content: `Please investigate **Conversation ID (also stored in \`CONVERSATION_ID\` env var)**: ${CONV_A}` }] }
+    expect(extractLettaConversationId(body)).toBeUndefined()
+  })
+
   it("returns undefined when the reminder omits the conversation line", () => {
     const body = { messages: [{ role: "user", content: agentInfoReminder() }] }
     expect(extractLettaConversationId(body)).toBeUndefined()

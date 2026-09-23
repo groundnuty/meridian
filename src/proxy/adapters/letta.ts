@@ -71,6 +71,7 @@ const CONVERSATION_MARKER = new RegExp(
   `\\*\\*Conversation ID[^*]*\\*\\*:\\s*(conv-${CONVERSATION_UUID})`,
   "i",
 )
+const SYSTEM_REMINDER = /<system-reminder>([\s\S]*?)<\/system-reminder>/gi
 
 /** Return the value if it is a well-formed Letta conversation id, else undefined. */
 export function normalizeLettaConversationId(value: string | undefined): string | undefined {
@@ -117,8 +118,12 @@ export function extractLettaConversationId(body: unknown): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
     if (!isRecord(message) || message.role !== "user") continue
-    const match = messageText(message.content).match(CONVERSATION_MARKER)
-    if (match) return match[1]!.toLowerCase()
+    let id: string | undefined
+    for (const reminder of messageText(message.content).matchAll(SYSTEM_REMINDER)) {
+      const match = reminder[1]?.match(CONVERSATION_MARKER)
+      if (match) id = match[1]?.toLowerCase()
+    }
+    if (id) return id
   }
   return undefined
 }
