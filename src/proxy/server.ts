@@ -78,7 +78,7 @@ import {
 import { checkPluginConfigured, isPluginlessOpenCodeRequest, notePluginlessOpenCodeRequest } from "./setup"
 import { describeBuildDrift, getBuildInfo } from "./buildInfo"
 import { getLatestVersion, startUpdateCheck, stopUpdateCheck } from "./updateCheck"
-import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveClaudeExecutableSync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, recordExtendedContextRateLimited, subscriptionIncludesExtendedContext } from "./models"
+import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveClaudeExecutableSync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, recordExtendedContextRateLimited, subscriptionIncludesExtendedContext, type ClaudeModel } from "./models"
 import { livenessReport, readinessReport, renderProbe } from "./probes"
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
@@ -538,7 +538,7 @@ function plog(message: string): void {
  * client (a rate limit still backs off on the same model), nothing is benched,
  * and this line records the decision in the proxy log.
  */
-function extendedContextFallbackBlocked(requestId: string, model: string, reason: string): boolean {
+function extendedContextFallbackBlocked(requestId: string, model: ClaudeModel, reason: string): boolean {
   if (!envBool("NO_1M_FALLBACK")) return false
   plog(`[PROXY] ${requestId} ${reason} on ${model}; MERIDIAN_NO_1M_FALLBACK is set, so not retrying on ${stripExtendedContext(model)}`)
   return true
